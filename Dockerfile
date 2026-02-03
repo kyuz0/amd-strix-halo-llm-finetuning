@@ -66,7 +66,7 @@ ENV VIRTUAL_ENV=/opt/venv
 ENV PATH=/opt/venv/bin:$PATH
 ENV PIP_NO_CACHE_DIR=1
 RUN printf 'source /opt/venv/bin/activate\n' > /etc/profile.d/venv.sh
-RUN python -m pip install --upgrade pip wheel packaging "setuptools<80.0.0"
+RUN python -m pip install --upgrade pip wheel packaging "setuptools<80.0.0" scikit-build-core
 
 # --- ROCm PyTorch ---
 # Update to v2-staging
