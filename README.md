@@ -18,6 +18,13 @@ Fedora toolbox with ROCm 7 nightly (TheRock) for fine-tuning Gemma-3, Qwen-3, an
 - Image: `docker.io/kyuz0/amd-strix-halo-llm-finetuning:latest`  
 - Repo: `https://github.com/kyuz0/amd-strix-halo-llm-finetuning`
 
+
+---
+
+## Updates (2025-02-03)
+- **ROCm Nightly**: Toolbox updated to include the latest version of ROCm 7 nightly builds from "TheRock".
+- **RCCL Patch**: Added a custom patch for RCCL to properly support `gfx1151` (Strix Halo).
+
 ---
 
 ## Performance on Strix Halo
