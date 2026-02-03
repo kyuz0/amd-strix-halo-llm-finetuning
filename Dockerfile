@@ -7,7 +7,7 @@ RUN dnf -y --nodocs --setopt=install_weak_deps=False install \
     radeontop git vim patch curl ninja-build tar libatomic xz \
     python3.13 python3.13-devel pip aria2c jupyterlab \
     gperftools-libs libdrm-devel zlib-devel openssl-devel numactl-devel \
-    libibverbs-utils perftest \
+    libibverbs-utils perftest jq \
     && dnf clean all && rm -rf /var/cache/dnf/*
 
 # --- fetch and unpack ROCm TheRock ---
@@ -123,12 +123,20 @@ COPY scripts/zz-venv-last.sh /etc/profile.d/zz-venv-last.sh
 RUN chmod 0644 /etc/profile.d/*.sh
 
 # --- disable core dumps ---
+RUN chmod 0644 /etc/profile.d/*.sh
 RUN printf 'ulimit -S -c 0\n' > /etc/profile.d/90-nocoredump.sh && chmod 0644 /etc/profile.d/90-nocoredump.sh
 
-# Force Jupyter to default to the venv interpreter
-RUN /opt/venv/bin/python -m ipykernel install --name=venv --display-name "Python (venv)" --prefix=/usr/local && \
-    mkdir -p /root/.local/share/jupyter/kernels/python3 && \
-    jq '.argv[0] = "/opt/venv/bin/python"' /usr/local/share/jupyter/kernels/venv/kernel.json > /root/.local/share/jupyter/kernels/python3/kernel.json
+# --- Install Custom RCCL (gfx1151) ---
+# Requires custom_libs/librccl.so.1.gz to be present (see PUSHING_TO_DOCKERHUB-NOTES.md)
+COPY custom_libs/librccl.so.1.gz /tmp/librccl.so.1.gz
+RUN echo "Installing Custom RCCL..." && \
+    gzip -d /tmp/librccl.so.1.gz && \
+    chmod 755 /tmp/librccl.so.1 && \
+    # Replace /opt/rocm library
+    cp -fv /tmp/librccl.so.1 /opt/rocm-7.0/lib/librccl.so.1.0 && \
+    # Replace /opt/venv library (find where it is installed)
+    find /opt/venv -name "librccl.so.1" -exec cp -fv /tmp/librccl.so.1 {} + && \
+    rm /tmp/librccl.so.1
 
 
 CMD ["/bin/bash"]
