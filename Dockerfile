@@ -18,8 +18,9 @@ RUN set -euo pipefail; \
     BASE="https://therock-nightly-tarball.s3.amazonaws.com"; \
     PREFIX="therock-dist-linux-${GFX}-${ROCM_MAJOR_VER}"; \
     KEY="$(curl -s "${BASE}?list-type=2&prefix=${PREFIX}" \
-    | grep -o "therock-dist-linux-${GFX}-${ROCM_MAJOR_VER}\.[0-9]\+\.[0-9]\+rc[0-9]\{8\}\.tar\.gz" \
-    | sort | tail -n1)"; \
+    | tr '<' '\n' \
+    | grep -o "therock-dist-linux-${GFX}-${ROCM_MAJOR_VER}\..*\.tar\.gz" \
+    | sort -V | tail -n1)"; \
     echo "Latest tarball: ${KEY}"; \
     aria2c -x 16 -s 16 -j 16 --file-allocation=none "${BASE}/${KEY}" -o therock.tar.gz
 RUN mkdir -p /opt/rocm-7.0 && \
