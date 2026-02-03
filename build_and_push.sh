@@ -30,6 +30,7 @@ if [ -z "$RUN_ID" ]; then
 fi
 
 echo "Downloading artifact '$ARTIFACT_NAME' from run $RUN_ID..."
+rm -rm custom_libs/* 2>/dev/null || true
 gh run download "$RUN_ID" --repo "$REPO" --name "$ARTIFACT_NAME" --dir custom_libs
 
 echo "Extracting artifact..."
