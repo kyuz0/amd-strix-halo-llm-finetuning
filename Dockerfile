@@ -64,13 +64,15 @@ RUN printf '%s\n' \
 RUN /usr/bin/python3.13 -m venv /opt/venv
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH=/opt/venv/bin:$PATH
-RUN python -m pip install --no-cache-dir -U pip setuptools wheel packaging
+ENV PIP_NO_CACHE_DIR=1
+RUN printf 'source /opt/venv/bin/activate\n' > /etc/profile.d/venv.sh
+RUN python -m pip install --upgrade pip wheel packaging "setuptools<80.0.0"
 
 # --- ROCm PyTorch ---
-# Update to v2-staging as per tmp-vllm
-RUN python -m pip install --no-cache-dir \
+# Update to v2-staging
+RUN python -m pip install \
     --index-url https://rocm.nightlies.amd.com/v2-staging/gfx1151/ \
-    --pre torch torchvision
+    --pre torch torchaudio torchvision
 
 # --- bitsandbytes (ROCm) ---
 WORKDIR /opt
