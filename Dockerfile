@@ -1,9 +1,13 @@
-FROM registry.fedoraproject.org/fedora:42 AS builder
+FROM registry.fedoraproject.org/fedora:43 AS builder
 
 # --- base toolchain ---
+# matched with tmp-vllm/scripts/install_deps.sh
 RUN dnf -y --nodocs --setopt=install_weak_deps=False install \
-       make gcc cmake lld clang clang-devel compiler-rt libcurl-devel \
-       radeontop git vim patch curl ninja-build tar libatomic xz python python3-devel pip aria2c jupyterlab \
+    make gcc gcc-c++ cmake lld clang clang-devel compiler-rt libcurl-devel \
+    radeontop git vim patch curl ninja-build tar libatomic xz \
+    python3.13 python3.13-devel pip aria2c jupyterlab \
+    gperftools-libs libdrm-devel zlib-devel openssl-devel numactl-devel \
+    libibverbs-utils perftest \
     && dnf clean all && rm -rf /var/cache/dnf/*
 
 # --- fetch and unpack ROCm TheRock ---
@@ -14,8 +18,8 @@ RUN set -euo pipefail; \
     BASE="https://therock-nightly-tarball.s3.amazonaws.com"; \
     PREFIX="therock-dist-linux-${GFX}-${ROCM_MAJOR_VER}"; \
     KEY="$(curl -s "${BASE}?list-type=2&prefix=${PREFIX}" \
-      | grep -o "therock-dist-linux-${GFX}-${ROCM_MAJOR_VER}\.[0-9]\+\.[0-9]\+rc[0-9]\{8\}\.tar\.gz" \
-      | sort | tail -n1)"; \
+    | grep -o "therock-dist-linux-${GFX}-${ROCM_MAJOR_VER}\.[0-9]\+\.[0-9]\+rc[0-9]\{8\}\.tar\.gz" \
+    | sort | tail -n1)"; \
     echo "Latest tarball: ${KEY}"; \
     aria2c -x 16 -s 16 -j 16 --file-allocation=none "${BASE}/${KEY}" -o therock.tar.gz
 RUN mkdir -p /opt/rocm-7.0 && \
@@ -33,34 +37,39 @@ ENV ROCM_PATH=/opt/rocm-7.0 \
     LIBRARY_PATH=/opt/rocm-7.0/lib:/opt/rocm-7.0/lib64 \
     CPATH=/opt/rocm-7.0/include \
     PKG_CONFIG_PATH=/opt/rocm-7.0/lib/pkgconfig \
-    PYTHONNOUSERSITE=1
+    PYTHONNOUSERSITE=1 \
+    TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 \
+    LD_PRELOAD=/usr/lib64/libtcmalloc_minimal.so.4
 
 RUN printf '%s\n' \
-  'export ROCM_PATH=/opt/rocm-7.0' \
-  'export HIP_PLATFORM=amd' \
-  'export HIP_PATH=/opt/rocm-7.0' \
-  'export HIP_CLANG_PATH=/opt/rocm-7.0/llvm/bin' \
-  'export HIP_INCLUDE_PATH=/opt/rocm-7.0/include' \
-  'export HIP_LIB_PATH=/opt/rocm-7.0/lib' \
-  'export HIP_DEVICE_LIB_PATH=/opt/rocm-7.0/lib/llvm/amdgcn/bitcode' \
-  'export LD_LIBRARY_PATH="$HIP_LIB_PATH:$ROCM_PATH/lib:$ROCM_PATH/lib64:$ROCM_PATH/llvm/lib"' \
-  'export LIBRARY_PATH="$HIP_LIB_PATH:$ROCM_PATH/lib:$ROCM_PATH/lib64"' \
-  'export CPATH="$HIP_INCLUDE_PATH"' \
-  'export PKG_CONFIG_PATH="$ROCM_PATH/lib/pkgconfig"' \
-  'export ROCBLAS_USE_HIPBLASLT=1' \
-  'export PYTHONNOUSERSITE=1' \
-  > /etc/profile.d/rocm.sh && chmod +x /etc/profile.d/rocm.sh && echo 'source /etc/profile.d/rocm.sh' >> /etc/bashrc
+    'export ROCM_PATH=/opt/rocm-7.0' \
+    'export HIP_PLATFORM=amd' \
+    'export HIP_PATH=/opt/rocm-7.0' \
+    'export HIP_CLANG_PATH=/opt/rocm-7.0/llvm/bin' \
+    'export HIP_INCLUDE_PATH=/opt/rocm-7.0/include' \
+    'export HIP_LIB_PATH=/opt/rocm-7.0/lib' \
+    'export HIP_DEVICE_LIB_PATH=/opt/rocm-7.0/lib/llvm/amdgcn/bitcode' \
+    'export LD_LIBRARY_PATH="$HIP_LIB_PATH:$ROCM_PATH/lib:$ROCM_PATH/lib64:$ROCM_PATH/llvm/lib"' \
+    'export LIBRARY_PATH="$HIP_LIB_PATH:$ROCM_PATH/lib:$ROCM_PATH/lib64"' \
+    'export CPATH="$HIP_INCLUDE_PATH"' \
+    'export PKG_CONFIG_PATH="$ROCM_PATH/lib/pkgconfig"' \
+    'export ROCBLAS_USE_HIPBLASLT=1' \
+    'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1' \
+    'export PYTHONNOUSERSITE=1' \
+    'export LD_PRELOAD=/usr/lib64/libtcmalloc_minimal.so.4' \
+    > /etc/profile.d/rocm.sh && chmod +x /etc/profile.d/rocm.sh && echo 'source /etc/profile.d/rocm.sh' >> /etc/bashrc
 
 # --- create venv to keep one consistent Python interpreter ---
-RUN /usr/bin/python3 -m venv /opt/venv
+RUN /usr/bin/python3.13 -m venv /opt/venv
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH=/opt/venv/bin:$PATH
 RUN python -m pip install --no-cache-dir -U pip setuptools wheel packaging
 
 # --- ROCm PyTorch ---
+# Update to v2-staging as per tmp-vllm
 RUN python -m pip install --no-cache-dir \
-      --index-url https://rocm.nightlies.amd.com/v2/gfx1151/ \
-      --pre torch torchvision
+    --index-url https://rocm.nightlies.amd.com/v2-staging/gfx1151/ \
+    --pre torch torchvision
 
 # --- bitsandbytes (ROCm) ---
 WORKDIR /opt
