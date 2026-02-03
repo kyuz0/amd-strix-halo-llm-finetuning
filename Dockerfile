@@ -140,5 +140,10 @@ RUN echo "Installing Custom RCCL..." && \
     find /opt/venv -name "librccl.so.1" -exec cp -fv /tmp/librccl.so.1 {} + && \
     rm /tmp/librccl.so.1
 
+# Force Jupyter to default to the venv interpreter
+RUN /opt/venv/bin/python -m ipykernel install --name=venv --display-name "Python (venv)" --prefix=/usr/local && \
+    mkdir -p /root/.local/share/jupyter/kernels/python3 && \
+    jq '.argv[0] = "/opt/venv/bin/python"' /usr/local/share/jupyter/kernels/venv/kernel.json > /root/.local/share/jupyter/kernels/python3/kernel.json
+
 
 CMD ["/bin/bash"]
