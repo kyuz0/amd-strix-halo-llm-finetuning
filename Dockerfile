@@ -76,8 +76,10 @@ RUN python -m pip install \
 
 # --- bitsandbytes (ROCm) ---
 WORKDIR /opt
-RUN git clone -b rocm_enabled_multi_backend https://github.com/ROCm/bitsandbytes.git
+# Use official repository which now supports ROCm (v0.46.1+)
+RUN git clone https://github.com/bitsandbytes-foundation/bitsandbytes.git
 WORKDIR /opt/bitsandbytes
+# Build from latest main branch
 RUN cmake -S . -DGPU_TARGETS="gfx1151" -DBNB_ROCM_ARCH="gfx1151" -DCOMPUTE_BACKEND=hip && \
     make -j && \
     python -m pip install --no-cache-dir . --no-build-isolation --no-deps
