@@ -27,6 +27,12 @@ Fedora toolbox with ROCm 7 nightly (TheRock) for fine-tuning Gemma-3, Qwen-3, an
 
 ---
 
+
+## Watch the YouTube Video
+
+[![Watch the YouTube Video](https://img.youtube.com/vi/nxugSRDg_jg/maxresdefault.jpg)](https://youtu.be/nxugSRDg_jg)  
+
+
 ## Performance on Strix Halo
 
 | Model | Full FT | LoRA | 8-bit + LoRA | QLoRA |
