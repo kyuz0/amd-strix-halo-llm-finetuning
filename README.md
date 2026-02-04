@@ -21,7 +21,7 @@ Fedora toolbox with ROCm 7 nightly (TheRock) for fine-tuning Gemma-3, Qwen-3, an
 
 ---
 
-## Updates (2025-02-03)
+## Updates (2026-02-03)
 - **ROCm Nightly**: Toolbox updated to include the latest version of ROCm 7 nightly builds from "TheRock".
 - **RCCL Patch**: Added a custom patch for RCCL to properly support `gfx1151` (Strix Halo).
 
