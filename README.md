@@ -18,6 +18,15 @@ Fedora toolbox with ROCm 7 nightly (TheRock) for fine-tuning Gemma-3, Qwen-3, an
 - Image: `docker.io/kyuz0/amd-strix-halo-llm-finetuning:latest`  
 - Repo: `https://github.com/kyuz0/amd-strix-halo-llm-finetuning`
 
+---
+
+### 📦 Project Context
+
+This repository is part of the **[Strix Halo AI Toolboxes](https://strix-halo-toolboxes.com)** project. Check out the website for an overview of all toolboxes, tutorials, and host configuration guides.
+
+### ❤️ Support
+
+This is a hobby project maintained in my spare time. If you find these toolboxes and tutorials useful, you can **[buy me a coffee](https://buymeacoffee.com/dcapitellau)** to support the work! ☕
 
 ---
 
