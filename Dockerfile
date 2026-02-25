@@ -106,11 +106,21 @@ RUN python -m pip install --no-cache-dir \
     huggingface-hub \
     trl \
     einops \
+    unsloth_zoo \
     tqdm==4.67.1 \
     ipywidgets==8.1.7 \
     ipykernel==6.30.1 \
     traitlets==5.14.3 \
     jupyter_core==5.8.1
+
+# --- Unsloth ---
+WORKDIR /opt
+RUN git clone https://github.com/unslothai/unsloth.git && \
+    cd unsloth && \
+    git fetch origin pull/4029/head:pr-fix && \
+    git checkout pr-fix && \
+    python -m pip install --no-cache-dir .
+
 
 # Copy workspace
 COPY workspace /opt/workspace
@@ -144,8 +154,8 @@ RUN echo "Installing Custom RCCL..." && \
 
 # Force Jupyter to default to the venv interpreter
 RUN /opt/venv/bin/python -m ipykernel install --name=venv --display-name "Python (venv)" --prefix=/usr/local && \
-    mkdir -p /root/.local/share/jupyter/kernels/python3 && \
-    jq '.argv[0] = "/opt/venv/bin/python"' /usr/local/share/jupyter/kernels/venv/kernel.json > /root/.local/share/jupyter/kernels/python3/kernel.json
+    /opt/venv/bin/python -m ipykernel install --name=python3 --display-name "Python (venv)" --prefix=/usr/local && \
+    /opt/venv/bin/python -m ipykernel install --name=python3 --display-name "Python (venv)" --prefix=/usr
 
 
 CMD ["/bin/bash"]
