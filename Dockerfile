@@ -6,7 +6,7 @@ RUN dnf -y --nodocs --setopt=install_weak_deps=False install \
     make gcc gcc-c++ cmake lld clang clang-devel compiler-rt libcurl-devel \
     radeontop git vim patch curl ninja-build tar libatomic xz \
     python3.13 python3.13-devel pip aria2c jupyterlab \
-    gperftools-libs libdrm-devel zlib-devel openssl-devel numactl-devel \
+    gperftools-libs libdrm-devel zlib-devel openssl openssl-devel numactl-devel \
     libibverbs-utils perftest jq \
     && dnf clean all && rm -rf /var/cache/dnf/*
 
