@@ -5,20 +5,28 @@ NAME="strix-halo-llm-finetuning"
 IMAGE="docker.io/kyuz0/amd-strix-halo-llm-finetuning:latest"
 REPO="${IMAGE%:*}"  # docker.io/kyuz0/amd-strix-halo-llm-finetuning
 
-# Get local + remote digests (needs skopeo + jq)
-local_digest="$(podman image inspect --format '{{.Digest}}' "$IMAGE" 2>/dev/null || true)"
-remote_digest="$(skopeo inspect docker://$IMAGE | jq -r '.Digest')"
+echo "Checking remote digest for $IMAGE ..."
+remote_digest="$(skopeo inspect docker://$IMAGE | jq -r '.Digest' 2>/dev/null || true)"
 
 if [[ -z "$remote_digest" || "$remote_digest" == "null" ]]; then
-  echo "Could not resolve remote digest for $IMAGE"; exit 1
+  echo "Could not resolve remote digest for $IMAGE"
+  exit 1
 fi
 
-if [[ "$local_digest" == "$remote_digest" ]]; then
-  echo "Already up to date."; exit 0
+# Check if the currently tagged image matches the remote digest
+local_repo_digests="$(podman image inspect --format '{{.RepoDigests}}' "$IMAGE" 2>/dev/null || true)"
+if [[ "$local_repo_digests" == *"$remote_digest"* ]]; then
+  echo "Already up to date."
+  exit 0
 fi
+
+# Store the old image ID before we pull the new one
+old_image_id="$(podman image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null || true)"
 
 echo "Updating $IMAGE ..."
 podman pull "$IMAGE"
+
+new_image_id="$(podman image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null || true)"
 
 echo "Recreating toolbox $NAME ..."
 toolbox rm -f "$NAME" 2>/dev/null || true
@@ -28,13 +36,10 @@ toolbox create "$NAME" \
      --group-add video --group-add render \
      --security-opt seccomp=unconfined
 
-echo "Removing older images from $REPO ..."
-# Remove only images from this repo whose digest != the new one
-while IFS= read -r line; do
-  img_id=$(awk '{print $1}' <<<"$line")
-  ref=$(awk '{print $2}' <<<"$line")
-  dig=$(awk '{print $3}' <<<"$line")
-  [[ -n "$dig" && "$dig" != "$remote_digest" ]] && podman image rm -f "$img_id" || true
-done < <(podman images --format '{{.ID}} {{.Repository}}:{{.Tag}} {{.Digest}}' | awk -v r="$REPO" '$2 ~ "^"r":"')
+# Clean up only the old image that we just replaced
+if [[ -n "$old_image_id" && "$old_image_id" != "$new_image_id" ]]; then
+  echo "Removing previous image ($old_image_id) ..."
+  podman image rm -f "$old_image_id" 2>/dev/null || true
+fi
 
 echo "Done."
