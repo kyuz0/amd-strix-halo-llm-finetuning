@@ -84,11 +84,7 @@ WORKDIR /opt/bitsandbytes
 # Build from latest main branch
 RUN cmake -S . -DGPU_TARGETS="gfx1151" -DBNB_ROCM_ARCH="gfx1151" -DCOMPUTE_BACKEND=hip && \
     make -j && \
-    python -m pip install --no-cache-dir . --no-build-isolation --no-deps && \
-    # Fix bitsandbytes version parsing bug dynamically by symlinking the built library to the fallback paths it searches for
-    BNB_SO=$(ls /opt/venv/lib*/python*/site-packages/bitsandbytes/libbitsandbytes_rocm*.so | head -n1) && \
-    ln -sf $BNB_SO /opt/venv/lib64/python3.13/site-packages/bitsandbytes/libbitsandbytes_rocm7.12.so && \
-    ln -sf $BNB_SO /opt/venv/lib64/python3.13/site-packages/bitsandbytes/libbitsandbytes_rocm82.so
+    python -m pip install --no-cache-dir . --no-build-isolation --no-deps
 
 # --- Flash-Attention ---
 ENV FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
