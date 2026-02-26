@@ -74,8 +74,7 @@ RUN python -m pip install \
     --index-url https://rocm.nightlies.amd.com/v2-staging/gfx1151/ \
     --pre torch torchaudio torchvision && \
     # Fix SMI library missing symbols by overwriting EVERY outdated SMI library with PyTorch's newer bundled version
-    SMI_VENV=$(find /opt/venv -name "librocm_smi64.so.1" -print -quit) && \
-    find /usr/lib64 /opt/rocm* -type f -name "librocm_smi64.so*" -exec cp -fv $SMI_VENV {} \;
+    find /usr/lib64 /opt/rocm* -type f -name "librocm_smi64.so*" -exec bash -c 'cp -fv "$1" "$2"' _ $(find /opt/venv -name "librocm_smi64.so.1" -print -quit) {} \;
 
 # --- bitsandbytes (ROCm) ---
 WORKDIR /opt
