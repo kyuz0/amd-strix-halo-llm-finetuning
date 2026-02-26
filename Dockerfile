@@ -40,7 +40,7 @@ ENV ROCM_PATH=/opt/rocm-7.0 \
     PKG_CONFIG_PATH=/opt/rocm-7.0/lib/pkgconfig \
     PYTHONNOUSERSITE=1 \
     TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 \
-    LD_PRELOAD=/usr/lib64/libtcmalloc_minimal.so.4
+    LD_PRELOAD=/usr/lib64/libtcmalloc_minimal.so.4:/opt/rocm-7.0/lib/librocm_smi64.so.1.0
 
 RUN printf '%s\n' \
     'export ROCM_PATH=/opt/rocm-7.0' \
@@ -57,7 +57,7 @@ RUN printf '%s\n' \
     'export ROCBLAS_USE_HIPBLASLT=1' \
     'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1' \
     'export PYTHONNOUSERSITE=1' \
-    'export LD_PRELOAD=/usr/lib64/libtcmalloc_minimal.so.4' \
+    'export LD_PRELOAD=/usr/lib64/libtcmalloc_minimal.so.4:/opt/rocm-7.0/lib/librocm_smi64.so.1.0' \
     > /etc/profile.d/rocm.sh && chmod +x /etc/profile.d/rocm.sh && echo 'source /etc/profile.d/rocm.sh' >> /etc/bashrc
 
 # --- create venv to keep one consistent Python interpreter ---
