@@ -73,8 +73,9 @@ RUN python -m pip install --upgrade pip wheel packaging "setuptools<80.0.0" scik
 RUN python -m pip install \
     --index-url https://rocm.nightlies.amd.com/v2-staging/gfx1151/ \
     --pre torch torchaudio torchvision && \
-    # Fix SMI library missing symbols by overwriting ROCm's outdated SMI library with PyTorch's newer bundled version
-    find /opt/venv -name "librocm_smi64.so.1" -exec cp -fv {} /opt/rocm-7.0/lib/librocm_smi64.so.1.0 \;
+    # Fix SMI library missing symbols by overwriting EVERY outdated SMI library with PyTorch's newer bundled version
+    SMI_VENV=$(find /opt/venv -name "librocm_smi64.so.1" -print -quit) && \
+    find /usr/lib64 /opt/rocm* -type f -name "librocm_smi64.so*" -exec cp -fv $SMI_VENV {} \;
 
 # --- bitsandbytes (ROCm) ---
 WORKDIR /opt
