@@ -58,7 +58,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         MODEL, 
         quantization_config=bnb_config, 
-        device_map={"": accelerator.process_index}, # Map model to current device for multi-GPU
+        device_map={"": accelerator.local_process_index}, # Must use LOCAL process index, not global!
         attn_implementation="eager"
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
