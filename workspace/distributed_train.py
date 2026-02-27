@@ -1,4 +1,5 @@
 import os
+import argparse
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
@@ -15,20 +16,25 @@ def report_peak_mem(tag: str = ""):
         print(f"Peak training memory{(' ' + tag) if tag else ''}: {torch.cuda.max_memory_allocated()/1e9:.2f} GB")
 
 def main():
+    parser = argparse.ArgumentParser(description="Distributed Fine-Tuning for Strix Halo")
+    parser.add_argument("--model", type=str, default="google/gemma-3-1b-it", 
+                        help="HuggingFace model ID (e.g. google/gemma-3-1b-it, google/gemma-3-4b-it)")
+    parser.add_argument("--type", type=str, choices=["full", "lora", "qlora-8bit", "qlora-4bit"], 
+                        default="qlora-4bit", help="Type of training to perform")
+    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=5e-5)
+    
+    args_cli = parser.parse_args()
+    
     # Initialize Accelerate for FSDP
     accelerator = Accelerator()
     
-    MODEL = "google/gemma-3-1b-it" 
+    MODEL = args_cli.model
     model_name = MODEL.split("/")[-1]
     
-    # Training parameters
-    LR = 5e-5
-    EPOCHS = 2
-    BATCH_SIZE = 4
-    
     # Load dataset
-    accelerator.print("Loading dataset...")
-    # Seed fixed for reproducibility across nodes
+    accelerator.print(f"Loading dataset for {args_cli.type} training on {MODEL}...")
     ds = load_dataset("Abirate/english_quotes", split="train").shuffle(seed=42).select(range(1000))
 
     def format_chat(ex):
@@ -45,61 +51,78 @@ def main():
         
     accelerator.print(f"Train: {len(ds['train'])}, Test: {len(ds['test'])}")
     
-    # Load tokenizer and base model using standard Transformers + BitsAndBytes
-    accelerator.print("Loading model and tokenizer...")
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_storage=torch.bfloat16 # Required parameter for FSDP + QLoRA
-    )
+    # Setup Quantization and Model Loading Arguments
+    model_kwargs = {
+        "device_map": {"": accelerator.local_process_index},
+        "attn_implementation": "eager",
+        "torch_dtype": torch.bfloat16
+    }
     
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL, 
-        quantization_config=bnb_config, 
-        device_map={"": accelerator.local_process_index}, # Must use LOCAL process index, not global!
-        attn_implementation="eager",
-        torch_dtype=torch.bfloat16 # Force base precision to bfloat16
-    )
+    if args_cli.type == "qlora-4bit":
+        accelerator.print("Using 4-bit QLoRA...")
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_storage=torch.bfloat16 # Required for FSDP
+        )
+        model_kwargs["quantization_config"] = bnb_config
+    elif args_cli.type == "qlora-8bit":
+        accelerator.print("Using 8-bit QLoRA...")
+        bnb_config = BitsAndBytesConfig(
+            load_in_8bit=True,
+        )
+        model_kwargs["quantization_config"] = bnb_config
+        
+    # Load Base Model
+    accelerator.print("Loading model and tokenizer...")
+    model = AutoModelForCausalLM.from_pretrained(MODEL, **model_kwargs)
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
     
-    model = prepare_model_for_kbit_training(model)
-    model.config.use_cache = False
-    
-    # PEFT / LoRA setup
-    accelerator.print("Applying LoRA adapters...")
-    lora_config = LoraConfig(
-        r=16,
-        lora_alpha=32,
-        target_modules=["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"],
-        lora_dropout=0.05,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-    model = get_peft_model(model, lora_config)
-    
-    # CRITICAL FSDP FIX: Both prepare_model_for_kbit_training and get_peft_model 
-    # introduce torch.float32 tensors (LayerNorms, adapters). FSDP requires 100% uniform 
-    # dtypes for flattening. We must sweep the final model and cast all float32 to bfloat16.
-    for name, param in model.named_parameters():
-        if param.dtype == torch.float32:
-            param.data = param.data.to(torch.bfloat16)
+    # Prepare and Apply PEFT if applicable
+    if args_cli.type in ["lora", "qlora-8bit", "qlora-4bit"]:
+        if "qlora" in args_cli.type:
+            model = prepare_model_for_kbit_training(model)
             
+        accelerator.print("Applying LoRA adapters...")
+        lora_config = LoraConfig(
+            r=16,
+            lora_alpha=32,
+            target_modules=["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"],
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        model = get_peft_model(model, lora_config)
+        
+        # FSDP Dtype Sweep Fix
+        for name, param in model.named_parameters():
+            if param.dtype == torch.float32:
+                param.data = param.data.to(torch.bfloat16)
+                
+        if accelerator.is_main_process:
+            model.print_trainable_parameters()
+    else:
+        accelerator.print("Performing Full Fine-Tuning (no PEFT)...")
+        # For full FT with FSDP, make sure model is strictly bfloat16
+        for name, param in model.named_parameters():
+            if param.dtype == torch.float32:
+                param.data = param.data.to(torch.bfloat16)
+
+    model.config.use_cache = False
     if accelerator.is_main_process:
-        model.print_trainable_parameters()
         print(f"Weights footprint: {model.get_memory_footprint()/1e9:.2f} GB")
         
-    # Set up SFT Trainer
     args = SFTConfig(
-        output_dir=f"output-{model_name}-qlora-fsdp",
+        output_dir=f"output-{model_name}-{args_cli.type}-fsdp",
         max_length=512,
         packing=False,
-        num_train_epochs=EPOCHS,
-        per_device_train_batch_size=BATCH_SIZE,
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
-        optim="paged_adamw_8bit",
+        num_train_epochs=args_cli.epochs,
+        per_device_train_batch_size=args_cli.batch_size,
+        gradient_checkpointing=True if args_cli.type != "full" else False, # Often disabled for Full FT
+        gradient_checkpointing_kwargs={"use_reentrant": False} if args_cli.type != "full" else None,
+        optim="paged_adamw_8bit" if "qlora" in args_cli.type else "adamw_torch_fused",
         fp16=False,
         bf16=True,
         lr_scheduler_type="constant",
@@ -111,7 +134,6 @@ def main():
         save_total_limit=1,
     )
     
-    # SFTTrainer integrates with Accelerate and detects the FSDP environment
     trainer = SFTTrainer(
         model=model, 
         args=args, 
@@ -125,7 +147,7 @@ def main():
     trainer.train()
     
     if accelerator.is_main_process:
-        report_peak_mem("qlora-fsdp")
+        report_peak_mem(f"{args_cli.type}-fsdp")
         accelerator.print("Saving model on main process...")
         trainer.save_model()
         
