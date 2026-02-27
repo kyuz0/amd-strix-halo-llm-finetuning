@@ -64,11 +64,6 @@ def main():
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
     
-    # Cast all non-quantized parameters to bfloat16 to match FSDP expected dtype
-    for name, param in model.named_parameters():
-        if param.dtype == torch.float32:
-            param.data = param.data.to(torch.bfloat16)
-
     model = prepare_model_for_kbit_training(model)
     model.config.use_cache = False
     
@@ -84,6 +79,13 @@ def main():
     )
     model = get_peft_model(model, lora_config)
     
+    # CRITICAL FSDP FIX: Both prepare_model_for_kbit_training and get_peft_model 
+    # introduce torch.float32 tensors (LayerNorms, adapters). FSDP requires 100% uniform 
+    # dtypes for flattening. We must sweep the final model and cast all float32 to bfloat16.
+    for name, param in model.named_parameters():
+        if param.dtype == torch.float32:
+            param.data = param.data.to(torch.bfloat16)
+            
     if accelerator.is_main_process:
         model.print_trainable_parameters()
         print(f"Weights footprint: {model.get_memory_footprint()/1e9:.2f} GB")
