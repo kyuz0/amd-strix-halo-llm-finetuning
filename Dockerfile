@@ -7,7 +7,7 @@ RUN dnf -y --nodocs --setopt=install_weak_deps=False install \
     radeontop git vim patch curl ninja-build tar libatomic xz \
     python3.13 python3.13-devel pip aria2c jupyterlab \
     gperftools-libs libdrm-devel zlib-devel openssl openssl-devel numactl-devel \
-    libibverbs-utils perftest jq \
+    libibverbs-utils perftest jq dialog iproute \
     && dnf clean all && rm -rf /var/cache/dnf/*
 
 # --- fetch and unpack ROCm TheRock ---
