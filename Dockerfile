@@ -123,7 +123,7 @@ RUN python -m pip install --no-cache-dir \
 WORKDIR /opt
 RUN git clone https://github.com/unslothai/unsloth.git && \
     cd unsloth && \
-    git fetch origin pull/4029/head:pr-fix && \
+    git fetch origin pull/4109/head:pr-fix && \
     git checkout pr-fix && \
     python -m pip install --no-cache-dir .
 
