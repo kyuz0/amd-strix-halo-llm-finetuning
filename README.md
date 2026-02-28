@@ -206,3 +206,21 @@ The script automatically connects securely to the remote machine via SSH, locate
 
 **Outputs**:
 All final model weight checkpoints and adapter configurations are automatically saved into your configured "Output Dir" (defaults to `~/finetuning-workspace/output-{model_name}-{quant_type}-fsdp`).
+
+---
+
+## 9) Automated Cluster Benchmarking
+
+If you want to test and benchmark the performance of the Gemma-3 models on your specific multi-node Strix Halo setup, you can use the automated benchmarking script.
+
+It will run through all 16 combinations (4 Gemma-3 models x 4 training configurations) and log the time taken and peak VRAM usage to `~/finetuning-workspace/benchmarks.json`.
+
+**Usage:**
+```bash
+cd ~/finetuning-workspace
+./benchmark_cluster.py --head_ip 192.168.100.1 --worker_ip 192.168.100.2
+```
+
+**Features:**
+* **Auto-Resume**: If a specific model causes an Out-of-Memory (OOM) error or the SSH connection drops, simply re-run the command. It reads the JSON file and skips tests that have already successfully completed or definitively failed.
+* **Live Table**: While running, it prints a live markdown-formatted table mimicking the results shown earlier in this document, so you can track your cluster's progress in real-time.
