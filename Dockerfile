@@ -112,6 +112,8 @@ RUN python -m pip install --no-cache-dir \
     huggingface-hub \
     trl \
     einops \
+    # Pin unsloth_zoo to 2026.1.4 because newer versions remove 'sanitize_logprob' 
+    # which is still required by the unsloth commit we check out later.
     unsloth_zoo==2026.1.4 \
     tqdm==4.67.1 \
     ipywidgets==8.1.7 \
@@ -121,8 +123,13 @@ RUN python -m pip install --no-cache-dir \
 
 # --- Unsloth ---
 WORKDIR /opt
+# We checkout a specific unsloth commit (07a7ff4... from Jan 31st) because:
+# 1. We must pin unsloth_zoo==2026.1.4 (see above) which lacks newer 'device_synchronize' features.
+# 2. Newer unsloth commits require 'device_synchronize'.
+# 3. We then apply PR 4109 (RDNA support fixes) cleanly on top of this stable commit.
 RUN git clone https://github.com/unslothai/unsloth.git && \
     cd unsloth && \
+    git checkout 07a7ff47b1b2b37c088b8e0d7ed7bf8710d9aa22 && \
     curl -sL https://github.com/unslothai/unsloth/pull/4109.diff | patch -p1 && \
     python -m pip install --no-cache-dir .
 
