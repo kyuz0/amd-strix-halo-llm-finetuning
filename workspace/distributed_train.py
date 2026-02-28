@@ -24,6 +24,8 @@ def main():
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=5e-5)
+    parser.add_argument("--output_dir", type=str, default="~/finetuning-workspace",
+                        help="Base directory to save the output model checkpoints")
     
     args_cli = parser.parse_args()
     
@@ -114,8 +116,12 @@ def main():
     if accelerator.is_main_process:
         print(f"Weights footprint: {model.get_memory_footprint()/1e9:.2f} GB")
         
+    from pathlib import Path
+    output_base = Path(args_cli.output_dir).expanduser()
+    output_path = output_base / f"output-{model_name}-{args_cli.type}-fsdp"
+    
     args = SFTConfig(
-        output_dir=f"output-{model_name}-{args_cli.type}-fsdp",
+        output_dir=str(output_path),
         max_length=512,
         packing=False,
         num_train_epochs=args_cli.epochs,

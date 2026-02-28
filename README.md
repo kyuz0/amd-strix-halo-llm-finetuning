@@ -175,3 +175,34 @@ Source: https://www.reddit.com/r/LocalLLaMA/comments/1m9wcdc/comment/n5gf53d/?co
 sudo grub2-mkconfig -o /boot/grub2/grub.cfg
 sudo reboot
 ```
+
+---
+
+## 8) Multi-Node Distributed Training (FSDP)
+
+You can train much larger models (e.g. Gemma 3 27B) by pooling the VRAM of multiple Strix Halo APUs across different physical machines using the experimental PyTorch FSDP wrapper over RCCL.
+
+**Prerequisites:**
+1. You need two physical machines on the same high-speed network (e.g., 100GbE RoCE v2 or Thunderbolt direct connection).
+2. The `strix-halo-llm-finetuning` toolbox container must be installed and created on **both** machines.
+3. SSH access must be enabled and accessible without a password between the host machines.
+4. You must copy the `workspace` folder to `~/finetuning-workspace` on **both** machines.
+
+**Launch the Cluster (Tested on 192.168.100.1 / 192.168.100.2):**
+To start the distributed training, run the TUI script from the Head node:
+
+```bash
+cd ~/finetuning-workspace
+./start_training_cluster.py
+```
+
+The terminal interface will guide you through:
+1. **Configuring IPs**: Enter the IP addresses of the Head and Worker node (defaults to `192.168.100.1` and `192.168.100.2`).
+2. **Configuring Training**: Set Hyperparameters like Epochs and Batch Size per node.
+3. **Network Settings**: Troubleshoot connectivity by forcing standard Ethernet over RDMA if needed, or activating NCCL debug logs.
+4. **Starting Training**: Select your target model and fine-tuning quantization strategy.
+
+The script automatically connects securely to the remote machine via SSH, locates the worker container, and simultaneously spins up the Accelerate PyTorch distributed processes.
+
+**Outputs**:
+All final model weight checkpoints and adapter configurations are automatically saved into your configured "Output Dir" (defaults to `~/finetuning-workspace/output-{model_name}-{quant_type}-fsdp`).
