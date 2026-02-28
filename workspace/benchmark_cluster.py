@@ -72,7 +72,7 @@ def print_table():
     print("="*80 + "\n")
 
     
-def launch_training(head_ip, worker_ip, rdma_iface, model, train_type, epochs, batch_size):
+def launch_training(head_ip, worker_ip, rdma_iface, model, train_type, epochs, batch_size, force_ethernet, enable_nccl_debug):
     workspace_dir = Path("/opt/workspace")
     output_dir = Path.home() / "finetuning-workspace" / "benchmark_outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -97,9 +97,14 @@ def launch_training(head_ip, worker_ip, rdma_iface, model, train_type, epochs, b
     worker_cmd = accel_base + ["--machine_rank", "1"] + train_script
     worker_cmd_str = " ".join(worker_cmd)
     
+    nccl_ib_disable = "1" if force_ethernet else "0"
+    worker_env = f"NCCL_SOCKET_IFNAME={rdma_iface} GLOO_SOCKET_IFNAME={rdma_iface} NCCL_IB_DISABLE={nccl_ib_disable}"
+    if enable_nccl_debug:
+        worker_env += " NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,NET"
+    
     ssh_cmd = [
         "ssh", "-o", "StrictHostKeyChecking=no", worker_ip,
-        f"toolbox run -c strix-halo-llm-finetuning -- bash -c 'cd {workspace_dir} && NCCL_SOCKET_IFNAME={rdma_iface} GLOO_SOCKET_IFNAME={rdma_iface} {worker_cmd_str}'"
+        f"toolbox run -c strix-halo-llm-finetuning -- bash -c 'cd {workspace_dir} && {worker_env} {worker_cmd_str}'"
     ]
     
     print(f"[{model}] Launching {train_type} Worker Process on {worker_ip}...")
@@ -110,6 +115,10 @@ def launch_training(head_ip, worker_ip, rdma_iface, model, train_type, epochs, b
     env = os.environ.copy()
     env["NCCL_SOCKET_IFNAME"] = rdma_iface
     env["GLOO_SOCKET_IFNAME"] = rdma_iface
+    env["NCCL_IB_DISABLE"] = "1" if force_ethernet else "0"
+    if enable_nccl_debug:
+        env["NCCL_DEBUG"] = "INFO"
+        env["NCCL_DEBUG_SUBSYS"] = "INIT,NET"
     
     print(f"[{model}] Launching {train_type} Head Process on {head_ip}...")
     start_time = time.time()
@@ -165,6 +174,8 @@ def main():
     parser.add_argument("--rdma_iface", default="auto", help="Use 'auto' to auto-detect based on head_ip")
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--force_ethernet", action="store_true", help="Force NCCL_IB_DISABLE=1")
+    parser.add_argument("--enable_nccl_debug", action="store_true", help="Enable NCCL_DEBUG=INFO")
     args = parser.parse_args()
     
     # Auto-detect Network Interface
@@ -199,7 +210,8 @@ def main():
                 
             print(f"\n[{model}] -> Starting benchmark for type: {t_type}")
             status, duration, peak_mem = launch_training(
-                args.head_ip, args.worker_ip, rdma_iface, model, t_type, args.epochs, args.batch_size
+                args.head_ip, args.worker_ip, rdma_iface, model, t_type, 
+                args.epochs, args.batch_size, args.force_ethernet, args.enable_nccl_debug
             )
             
             if status == "interrupted":

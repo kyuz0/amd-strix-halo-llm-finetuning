@@ -120,12 +120,18 @@ def main():
     output_base = Path(args_cli.output_dir).expanduser()
     output_path = output_base / f"output-{model_name}-{args_cli.type}-fsdp"
     
+    # To match notebook VRAM while taking advantage of distributed FSDP, 
+    # we enforce gradient accumulation to keep micro-batches small.
+    micro_batch = max(1, args_cli.batch_size // 4)
+    grad_accum = max(1, args_cli.batch_size // micro_batch)
+    
     args = SFTConfig(
         output_dir=str(output_path),
         max_length=512,
         packing=False,
         num_train_epochs=args_cli.epochs,
-        per_device_train_batch_size=args_cli.batch_size,
+        per_device_train_batch_size=micro_batch,
+        gradient_accumulation_steps=grad_accum,
         gradient_checkpointing=True if args_cli.type != "full" else False, # Often disabled for Full FT
         gradient_checkpointing_kwargs={"use_reentrant": False} if args_cli.type != "full" else None,
         optim="paged_adamw_8bit" if "qlora" in args_cli.type else "adamw_torch_fused",
