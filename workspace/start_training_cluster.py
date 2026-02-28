@@ -52,13 +52,14 @@ def setup_ips_dialog(current_head, current_worker):
         return lines[0].strip(), lines[1].strip()
     return None
 
-def setup_training_params(current_epochs, current_bs):
+def setup_training_params(current_epochs, current_bs, current_out):
     form_args = [
         "--title", "Training Parameters",
         "--form", "Configure hyperparameters:",
-        "10", "60", "2",
-        "Epochs:", "1", "1",  str(current_epochs), "1", "20", "20", "0",
-        "Batch Size (Per Node):", "2", "1", str(current_bs), "2", "20", "20", "0"
+        "12", "70", "3",
+        "Epochs:", "1", "1",  str(current_epochs), "1", "25", "25", "0",
+        "Batch Size (Per Node):", "2", "1", str(current_bs), "2", "25", "25", "0",
+        "Output Dir (Host):", "3", "1", str(current_out), "3", "25", "40", "0"
     ]
     
     result = run_dialog(form_args)
@@ -66,11 +67,11 @@ def setup_training_params(current_epochs, current_bs):
         return None
         
     lines = result.splitlines()
-    if len(lines) >= 2:
-        return lines[0].strip(), lines[1].strip()
+    if len(lines) >= 3:
+        return lines[0].strip(), lines[1].strip(), lines[2].strip()
     return None
 
-def launch_training(head_ip, worker_ip, model, train_type, epochs, batch_size, force_ethernet=False, enable_nccl_debug=False):
+def launch_training(head_ip, worker_ip, model, train_type, epochs, batch_size, force_ethernet=False, enable_nccl_debug=False, output_dir="~/finetuning-workspace"):
     workspace_dir = Path("/opt/workspace")
         
     if not workspace_dir.exists():
@@ -93,6 +94,7 @@ def launch_training(head_ip, worker_ip, model, train_type, epochs, batch_size, f
     print(f" Type:        {train_type}")
     print(f" Epochs:      {epochs}")
     print(f" Batch Size:  {batch_size}")
+    print(f" Output Dir:  {output_dir}")
     print(f" Network:     {rdma_iface} (Force ETH: {force_ethernet}, Debug: {enable_nccl_debug})")
     print("="*60 + "\n")
     
@@ -110,7 +112,8 @@ def launch_training(head_ip, worker_ip, model, train_type, epochs, batch_size, f
         "--model", model, 
         "--type", train_type,
         "--epochs", str(epochs),
-        "--batch_size", str(batch_size)
+        "--batch_size", str(batch_size),
+        "--output_dir", str(output_dir)
     ]
     
     # 1. Launch Worker Process via SSH
@@ -176,6 +179,7 @@ def main():
     worker_ip = "192.168.100.2"
     epochs = "2"
     batch_size = "4"
+    output_dir = "~/finetuning-workspace"
     force_ethernet = False
     enable_nccl_debug = False
     
@@ -200,9 +204,9 @@ def main():
         choice = run_dialog([
             "--clear", "--backtitle", "AMD Strix Halo FSDP Training Launcher",
             "--title", "Main Menu",
-            "--menu", "Select Action:", "17", "75", "6",
+            "--menu", "Select Action:", "18", "80", "6",
             "1", f"Configure IPs (Head: {head_ip}, Worker: {worker_ip})",
-            "2", f"Configure Training (Epochs: {epochs}, BS: {batch_size})",
+            "2", f"Configure Training (Epochs: {epochs}, BS: {batch_size}, Out: {output_dir})",
             "3", f"Network Settings (Force ETH: {eth_status}, Debug: {debug_status})",
             "4", "Start Distributed Training",
             "5", "Exit"
@@ -218,9 +222,9 @@ def main():
                 head_ip, worker_ip = res
                 
         elif choice == "2":
-            res = setup_training_params(epochs, batch_size)
+            res = setup_training_params(epochs, batch_size, output_dir)
             if res:
-                epochs, batch_size = res
+                epochs, batch_size, output_dir = res
                 
         elif choice == "3":
             while True:
@@ -269,7 +273,7 @@ def main():
             
             # Clear and run
             subprocess.run(["clear"])
-            launch_training(head_ip, worker_ip, selected_model, selected_type, epochs, batch_size, force_ethernet, enable_nccl_debug)
+            launch_training(head_ip, worker_ip, selected_model, selected_type, epochs, batch_size, force_ethernet, enable_nccl_debug, output_dir)
             input("\nPress Enter to return to menu...")
 
 if __name__ == "__main__":
