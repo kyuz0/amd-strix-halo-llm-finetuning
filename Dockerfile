@@ -112,7 +112,7 @@ RUN python -m pip install --no-cache-dir \
     huggingface-hub \
     trl \
     einops \
-    unsloth_zoo \
+    unsloth_zoo==2026.1.4 \
     tqdm==4.67.1 \
     ipywidgets==8.1.7 \
     ipykernel==6.30.1 \
