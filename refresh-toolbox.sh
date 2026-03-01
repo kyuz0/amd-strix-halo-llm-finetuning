@@ -28,13 +28,22 @@ podman pull "$IMAGE"
 
 new_image_id="$(podman image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null || true)"
 
+# Base options
+OPTIONS="--device /dev/dri --device /dev/kfd --group-add video --group-add render --security-opt seccomp=unconfined"
+
+# Check for InfiniBand devices (needed for RDMA/RoCE in multi-node training)
+if [ -d "/dev/infiniband" ]; then
+    echo "🔎 InfiniBand devices detected! Adding RDMA support..."
+    OPTIONS="$OPTIONS --device /dev/infiniband --group-add rdma --ulimit memlock=-1"
+else
+    echo "ℹ️  No InfiniBand devices detected (RDMA will not be available)."
+fi
+
 echo "Recreating toolbox $NAME ..."
 toolbox rm -f "$NAME" 2>/dev/null || true
 toolbox create "$NAME" \
   --image "$IMAGE" \
-  -- --device /dev/dri --device /dev/kfd \
-     --group-add video --group-add render \
-     --security-opt seccomp=unconfined
+  -- $OPTIONS
 
 # Clean up only the old image that we just replaced
 if [[ -n "$old_image_id" && "$old_image_id" != "$new_image_id" ]]; then
