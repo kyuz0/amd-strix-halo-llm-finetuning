@@ -140,12 +140,14 @@ def launch_training(mode, head_ip, worker_ip, force_ethernet, enable_nccl_debug)
     current_lr = "5e-5"
     current_ctx = 512
     current_grad_accum = 1 if mode == "Multi-Node" else 1
+    use_unsloth = False
     
     while True:
         model_name = models[current_model_idx].split("/")[-1]
         type_name = types[current_type_idx]
         strategy_name = strategies[current_strategy_idx].upper()
         
+        unsloth_status = "ON" if use_unsloth else "OFF"
         menu_items = [
             "1", f"Model:             {model_name}",
             "2", f"Finetune Type:     {type_name}",
@@ -154,16 +156,17 @@ def launch_training(mode, head_ip, worker_ip, force_ethernet, enable_nccl_debug)
             "5", f"Learning Rate:     {current_lr}",
             "6", f"Max Context Len:   {current_ctx}",
             "7", f"Grad Accumulation: {current_grad_accum}",
+            "8", f"Unsloth:           {unsloth_status}",
         ]
         if mode == "Multi-Node":
-            menu_items.extend(["8", f"Strategy:          {strategy_name}"])
+            menu_items.extend(["9", f"Strategy:          {strategy_name}"])
+            launch_idx = "10"
+            cancel_idx = "11"
+            item_count = "12"
+        else:
             launch_idx = "9"
             cancel_idx = "10"
             item_count = "11"
-        else:
-            launch_idx = "8"
-            cancel_idx = "9"
-            item_count = "10"
         menu_items.extend([launch_idx, "LAUNCH TRAINING", cancel_idx, "CANCEL"])
         
         menu_args = [
@@ -203,7 +206,9 @@ def launch_training(mode, head_ip, worker_ip, force_ethernet, enable_nccl_debug)
         elif choice == "7":
             new_val = run_dialog(["--title", "Gradient Accumulation", "--inputbox", "Steps to accumulate before gradient sync\n(higher = less network overhead, larger effective batch):", "12", "55", str(current_grad_accum)])
             if new_val: current_grad_accum = int(new_val)
-        elif choice == "8" and mode == "Multi-Node":
+        elif choice == "8":
+            use_unsloth = not use_unsloth
+        elif choice == "9" and mode == "Multi-Node":
             s_choice = run_dialog(["--title", "Strategy", "--menu", "DDP: replicate model (fast, needs model to fit per node)\nFSDP: shard model (for large models like 27B)", "14", "65", "2",
                                    "0", "DDP  - Data Parallel (default)",
                                    "1", "FSDP - Fully Sharded (large models)"])
@@ -215,9 +220,15 @@ def launch_training(mode, head_ip, worker_ip, force_ethernet, enable_nccl_debug)
     model_id = models[current_model_idx]
     train_type = types[current_type_idx]
 
+    # ── Block Unsloth + FSDP ───────────────────────────────────────
+    strategy = strategies[current_strategy_idx]
+    if use_unsloth and strategy == "fsdp":
+        run_dialog(["--title", "❌ Unsupported", "--msgbox",
+                    "Unsloth does not support FSDP.\n\nPlease use DDP strategy with Unsloth.", "10", "50"])
+        return
+
     # ── Memory estimation check ────────────────────────────────────
     world_size = 2 if mode == "Multi-Node" else 1
-    strategy = strategies[current_strategy_idx]
     est_gb = _estimate_memory(model_id, train_type, strategy, current_batch, current_ctx, world_size)
     available_gb = 120  # 128GB - ~8GB OS overhead
 
@@ -244,8 +255,12 @@ def launch_training(mode, head_ip, worker_ip, force_ethernet, enable_nccl_debug)
             return
     
     # Common arguments
-    strategy = strategies[current_strategy_idx]
-    train_args = f"--model {model_id} --type {train_type} --strategy {strategy} --batch-size {current_batch} --epochs {current_epochs} --learning-rate {current_lr} --max-length {current_ctx} --gradient-accumulation {current_grad_accum}"
+    train_args = (f"--model {model_id} --type {train_type} --strategy {strategy} "
+                  f"--batch-size {current_batch} --epochs {current_epochs} "
+                  f"--learning-rate {current_lr} --max-length {current_ctx} "
+                  f"--gradient-accumulation {current_grad_accum}")
+    if use_unsloth:
+        train_args += " --unsloth"
     
     # Head node script path
     script_dir = os.path.abspath(os.path.dirname(__file__))

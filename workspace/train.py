@@ -91,8 +91,13 @@ def main():
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=5e-5)
     parser.add_argument("--max-length", type=int, default=512)
+    parser.add_argument("--unsloth", action="store_true",
+                        help="Use Unsloth FastLanguageModel for optimized loading and training")
     parser.add_argument("--debug", action="store_true", help="Enable per-step device/memory debug output")
     args = parser.parse_args()
+
+    if args.unsloth and args.strategy == "fsdp":
+        parser.error("Unsloth does not support FSDP. Use --strategy ddp instead.")
 
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -110,7 +115,8 @@ def main():
 
     if is_main:
         strategy_label = args.strategy.upper() if is_distributed else "Single"
-        print(f"Training: {args.model} | type={args.type} | world_size={world_size} | strategy={strategy_label}")
+        unsloth_label = " [Unsloth]" if args.unsloth else ""
+        print(f"Training: {args.model} | type={args.type} | world_size={world_size} | strategy={strategy_label}{unsloth_label}")
         print(f"Params:   lr={args.learning_rate} epochs={args.epochs} batch={args.batch_size} maxlen={args.max_length}")
         if is_distributed:
             print(f"Dist:     gradient_accumulation_steps={grad_accum} (amortize sync cost)")
@@ -129,72 +135,145 @@ def main():
     ds = ds.map(format_chat, remove_columns=ds.column_names)
     ds = ds.train_test_split(test_size=0.2)
 
-    # ── Tokenizer ──────────────────────────────────────────────────────
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    # ── Model + Tokenizer ──────────────────────────────────────────────
+    if args.unsloth:
+        # ── Unsloth path ──────────────────────────────────────────────
+        # Uses FastLanguageModel which handles device placement, attention
+        # implementation, and quantization internally. Matches the tested
+        # configs from gemma-finetuning-unsloth.ipynb exactly.
+        os.environ["UNSLOTH_SKIP_TORCHVISION_CHECK"] = "1"
+        from unsloth import FastLanguageModel
 
-    # ── Model ──────────────────────────────────────────────────────────
-    # Following the official TRL sft.py pattern:
-    #   - Non-quantized: NO device_map, NO .to() — Trainer handles placement
-    #   - Quantized: device_map = get_kbit_device_map() from trl
+        if args.type == "full":
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=args.model, max_seq_length=args.max_length,
+                dtype=None, load_in_4bit=False,
+            )
+            bf16, fp16 = True, False
+            optim = "adamw_torch_fused"
 
-    if args.type == "full":
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model, torch_dtype=torch.bfloat16, attn_implementation="eager"
-        )
-        bf16, fp16 = True, False
-        optim = "adamw_torch_fused"
+        elif args.type == "lora":
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=args.model, max_seq_length=args.max_length,
+                dtype=None, load_in_4bit=False,
+            )
+            model = FastLanguageModel.get_peft_model(
+                model, r=16, lora_alpha=32,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                                "gate_proj", "up_proj", "down_proj"],
+                lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
+            )
+            bf16, fp16 = True, False
+            optim = "adamw_torch_fused"
 
-    elif args.type == "lora":
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model, torch_dtype=torch.bfloat16, attn_implementation="eager"
-        )
-        lora_config = LoraConfig(
-            r=16, lora_alpha=32,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                            "gate_proj", "up_proj", "down_proj"],
-            lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
-        )
-        model = get_peft_model(model, lora_config)
-        bf16, fp16 = True, False
-        optim = "adamw_torch_fused"
+        elif args.type == "8bit-lora":
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=args.model, max_seq_length=args.max_length,
+                dtype=None, load_in_8bit=True, load_in_4bit=False,
+            )
+            model = FastLanguageModel.get_peft_model(
+                model, r=16, lora_alpha=32,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                                "gate_proj", "up_proj", "down_proj"],
+                lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
+            )
+            bf16, fp16 = True, False
+            optim = "adamw_8bit"
 
-    elif args.type == "8bit-lora":
-        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model, quantization_config=bnb_config,
-            device_map=get_kbit_device_map(), attn_implementation="eager"
-        )
-        model = prepare_model_for_kbit_training(model)
-        lora_config = LoraConfig(
-            r=16, lora_alpha=32,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                            "gate_proj", "up_proj", "down_proj"],
-            lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
-        )
-        model = get_peft_model(model, lora_config)
-        bf16, fp16 = True, False
-        optim = "adamw_8bit"
+        elif args.type == "qlora":
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=args.model, max_seq_length=args.max_length,
+                dtype=None, load_in_4bit=True,
+            )
+            model.config.use_cache = False
+            model = FastLanguageModel.get_peft_model(
+                model, r=16, lora_alpha=32,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                                "gate_proj", "up_proj", "down_proj"],
+                lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
+            )
+            bf16, fp16 = True, False
+            optim = "paged_adamw_8bit"
 
-    elif args.type == "qlora":
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True, bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True,
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model, quantization_config=bnb_config,
-            device_map=get_kbit_device_map(), attn_implementation="eager"
-        )
-        model = prepare_model_for_kbit_training(model)
-        model.config.use_cache = False
-        lora_config = LoraConfig(
-            r=16, lora_alpha=32,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                            "gate_proj", "up_proj", "down_proj"],
-            lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
-        )
-        model = get_peft_model(model, lora_config)
-        bf16, fp16 = True, False
-        optim = "paged_adamw_8bit"
+        # Pre-format dataset with chat template for Unsloth
+        # (Unsloth SFTTrainer expects a pre-formatted "text" column)
+        from unsloth.chat_templates import get_chat_template
+        tokenizer = get_chat_template(tokenizer, chat_template="gemma-3")
+
+        def apply_template(examples):
+            texts = [tokenizer.apply_chat_template(
+                m, tokenize=False, add_generation_prompt=False
+            ).removeprefix('<bos>') for m in examples["messages"]]
+            return {"text": texts}
+
+        ds["train"] = ds["train"].map(apply_template, batched=True)
+        ds["test"] = ds["test"].map(apply_template, batched=True)
+
+    else:
+        # ── Standard HF path ──────────────────────────────────────────
+        # Following the official TRL sft.py pattern:
+        #   - Non-quantized: NO device_map, NO .to() — Trainer handles placement
+        #   - Quantized: device_map = get_kbit_device_map() from trl
+        tokenizer = AutoTokenizer.from_pretrained(args.model)
+
+        if args.type == "full":
+            model = AutoModelForCausalLM.from_pretrained(
+                args.model, torch_dtype=torch.bfloat16, attn_implementation="eager"
+            )
+            bf16, fp16 = True, False
+            optim = "adamw_torch_fused"
+
+        elif args.type == "lora":
+            model = AutoModelForCausalLM.from_pretrained(
+                args.model, torch_dtype=torch.bfloat16, attn_implementation="eager"
+            )
+            lora_config = LoraConfig(
+                r=16, lora_alpha=32,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                                "gate_proj", "up_proj", "down_proj"],
+                lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
+            )
+            model = get_peft_model(model, lora_config)
+            bf16, fp16 = True, False
+            optim = "adamw_torch_fused"
+
+        elif args.type == "8bit-lora":
+            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+            model = AutoModelForCausalLM.from_pretrained(
+                args.model, quantization_config=bnb_config,
+                device_map=get_kbit_device_map(), attn_implementation="eager"
+            )
+            model = prepare_model_for_kbit_training(model)
+            lora_config = LoraConfig(
+                r=16, lora_alpha=32,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                                "gate_proj", "up_proj", "down_proj"],
+                lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
+            )
+            model = get_peft_model(model, lora_config)
+            bf16, fp16 = True, False
+            optim = "adamw_8bit"
+
+        elif args.type == "qlora":
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True,
+            )
+            model = AutoModelForCausalLM.from_pretrained(
+                args.model, quantization_config=bnb_config,
+                device_map=get_kbit_device_map(), attn_implementation="eager"
+            )
+            model = prepare_model_for_kbit_training(model)
+            model.config.use_cache = False
+            lora_config = LoraConfig(
+                r=16, lora_alpha=32,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                                "gate_proj", "up_proj", "down_proj"],
+                lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
+            )
+            model = get_peft_model(model, lora_config)
+            bf16, fp16 = True, False
+            optim = "paged_adamw_8bit"
 
     if is_main and args.type != "full":
         model.print_trainable_parameters()
@@ -205,7 +284,8 @@ def main():
         print(f"[RANK {rank}] PRE-TRAINER model device={first_p.device} dtype={first_p.dtype}", flush=True)
 
     # ── SFTConfig / Trainer ────────────────────────────────────────────
-    output_dir = f"output-{args.model.split('/')[-1]}-{args.type}"
+    unsloth_tag = "unsloth-" if args.unsloth else ""
+    output_dir = f"output-{unsloth_tag}{args.model.split('/')[-1]}-{args.type}"
 
     # FSDP needs gradient checkpointing to fit large models
     use_grad_ckpt = True if args.strategy == "fsdp" or args.type in ("8bit-lora", "qlora") else False
@@ -234,6 +314,12 @@ def main():
             fsdp_config["transformer_layer_cls_to_wrap"] = [layer_cls]
         fsdp_args["fsdp_config"] = fsdp_config
 
+    # Unsloth uses pre-formatted "text" column; standard HF uses "messages"
+    sft_dataset_kwargs = {"add_special_tokens": False, "append_concat_token": True}
+    sft_extra = {}
+    if args.unsloth:
+        sft_extra["dataset_text_field"] = "text"
+
     training_args = SFTConfig(
         output_dir=output_dir,
         max_length=args.max_length,
@@ -252,12 +338,13 @@ def main():
         bf16=bf16,
         lr_scheduler_type="constant",
         report_to="none",
-        dataset_kwargs={"add_special_tokens": False, "append_concat_token": True},
+        dataset_kwargs=sft_dataset_kwargs,
         save_total_limit=1,
         # DDP optimizations: find_unused_parameters=True is needed because
         # Gemma 3 12B+ are multimodal (vision params unused in text-only training)
         ddp_find_unused_parameters=True,
         ddp_bucket_cap_mb=256,
+        **sft_extra,
         **fsdp_args,
     )
 

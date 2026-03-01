@@ -197,12 +197,15 @@ def main():
                         help="Timeout per run in seconds (default: 600)")
     parser.add_argument("--results-file", type=str, default="benchmark_results.json",
                         help="Results file (default: benchmark_results.json)")
+    parser.add_argument("--unsloth", action="store_true",
+                        help="Benchmark with Unsloth optimizations enabled")
     args = parser.parse_args()
 
     world_size = args.world_size or int(os.environ.get("WORLD_SIZE", "2"))
     head_ip = args.head_ip or os.environ.get("VLLM_HEAD_IP", "192.168.100.1")
     worker_ip = args.worker_ip or os.environ.get("VLLM_WORKER_IP", "192.168.100.2")
     accums = [1, 4]
+    use_unsloth = args.unsloth
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     train_script = os.path.join(script_dir, "train.py")
@@ -224,13 +227,18 @@ def main():
                 if strategy == "fsdp" and train_type in ("8bit-lora", "qlora"):
                     skipped.append((model, train_type, batch, est))
                     continue
+                # Unsloth does not support FSDP
+                if use_unsloth and strategy == "fsdp":
+                    skipped.append((model, train_type, batch, est))
+                    continue
                 for accum in accums:
                     plan.append((model, train_type, strategy, batch, accum, est))
 
     # ── Phase 2: Print plan ────────────────────────────────────────
     mode_str = f"Multi-Node ({head_ip} ↔ {worker_ip})" if world_size > 1 else "Single Node"
+    unsloth_str = " [Unsloth]" if use_unsloth else ""
     print("=" * 95)
-    print(f"BENCHMARK PLAN — {mode_str}")
+    print(f"BENCHMARK PLAN — {mode_str}{unsloth_str}")
     print(f"world_size={world_size}, max_length={args.max_length}, accum={accums}")
     print(f"Rule: DDP preferred → FSDP only when DDP can't fit → skip if neither fits")
     print("=" * 95)
@@ -261,7 +269,8 @@ def main():
             with open(args.results_file) as f:
                 prev_results = json.load(f)
             for r in prev_results:
-                key = f"{r['model']}|{r['type']}|{r['strategy']}|{r['batch']}|{r['accum']}"
+                unsloth_key = "unsloth" if r.get("unsloth", False) else "hf"
+                key = f"{r['model']}|{r['type']}|{r['strategy']}|{r['batch']}|{r['accum']}|{unsloth_key}"
                 completed_keys.add(key)
             print(f"\n📂 Loaded {len(prev_results)} previous results from {args.results_file}")
         except (json.JSONDecodeError, KeyError):
@@ -274,7 +283,8 @@ def main():
     for entry in plan:
         model, tt, strat, batch, accum, est = entry
         name = model.split("/")[-1]
-        key = f"{name}|{tt}|{strat}|{batch}|{accum}"
+        unsloth_key = "unsloth" if use_unsloth else "hf"
+        key = f"{name}|{tt}|{strat}|{batch}|{accum}|{unsloth_key}"
         if key in completed_keys:
             skipped_done += 1
         else:
@@ -300,12 +310,16 @@ def main():
     for i, (model, tt, strat, batch, accum, est) in enumerate(remaining, 1):
         name = model.split("/")[-1]
         label = f"[{i}/{len(remaining)}] {name} {tt} {strat} batch={batch} accum={accum}"
+        if use_unsloth:
+            label += " [unsloth]"
         print(f"\n{'─'*80}")
         print(f"▶ {label} (est: {est:.0f}GB)")
 
         train_args = (f"--model {model} --type {tt} --strategy {strat} "
                       f"--batch-size {batch} --gradient-accumulation {accum} "
                       f"--epochs 1 --max-length {args.max_length}")
+        if use_unsloth:
+            train_args += " --unsloth"
 
         if world_size > 1:
             rc, elapsed, stdout, stderr = run_multinode(
@@ -318,7 +332,8 @@ def main():
             )
 
         result = {"model": name, "type": tt, "strategy": strat,
-                  "batch": batch, "accum": accum, "est_gb": round(est, 1)}
+                  "batch": batch, "accum": accum, "est_gb": round(est, 1),
+                  "unsloth": use_unsloth}
 
         if rc == 0:
             time_lines = [l for l in stdout.split("\n") if "Training time:" in l]
@@ -355,14 +370,15 @@ def main():
 
 def _print_summary(results):
     """Print final summary table."""
-    print(f"\n{'='*95}")
+    print(f"\n{'='*105}")
     print("BENCHMARK RESULTS")
-    print(f"{'='*95}")
-    print(f"{'Model':<16} {'Type':<10} {'Strategy':<8} {'Batch':<6} {'Accum':<6} {'Est GB':<8} {'Time':<8} {'Status':<8}")
-    print("-" * 95)
+    print(f"{'='*105}")
+    print(f"{'Model':<16} {'Type':<10} {'Strategy':<8} {'Batch':<6} {'Accum':<6} {'Est GB':<8} {'Time':<8} {'Status':<8} {'Engine':<8}")
+    print("-" * 105)
     for r in results:
+        engine = "unsloth" if r.get("unsloth", False) else "hf"
         print(f"{r['model']:<16} {r['type']:<10} {r['strategy']:<8} {r['batch']:<6} "
-              f"{r['accum']:<6} {r['est_gb']:<7.0f}G {r['time_s']:<7.1f}s {r['status']}")
+              f"{r['accum']:<6} {r['est_gb']:<7.0f}G {r['time_s']:<7.1f}s {r['status']:<8} {engine}")
 
     ok = [r for r in results if r["status"] == "OK"]
     fail = [r for r in results if r["status"] != "OK"]
