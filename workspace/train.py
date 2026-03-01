@@ -17,9 +17,17 @@ Key principles (from official HuggingFace TRL source):
 """
 import time
 import argparse
-import torch
+import sys
 import gc
 import os
+
+# Unsloth MUST be imported before transformers/peft/trl to apply patches.
+# We check sys.argv early to do this before any other ML imports.
+if "--unsloth" in sys.argv:
+    os.environ["UNSLOTH_SKIP_TORCHVISION_CHECK"] = "1"
+    import unsloth  # noqa: F401 — triggers patch hooks
+
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TrainerCallback
 from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model, PeftModel
 from trl import SFTConfig, SFTTrainer
@@ -142,12 +150,12 @@ def main():
         # implementation, and quantization internally. Matches the tested
         # configs from gemma-finetuning-unsloth.ipynb exactly.
         os.environ["UNSLOTH_SKIP_TORCHVISION_CHECK"] = "1"
-        from unsloth import FastLanguageModel
+        from unsloth import FastLanguageModel  # noqa: already imported early for patches
 
         if args.type == "full":
             model, tokenizer = FastLanguageModel.from_pretrained(
                 model_name=args.model, max_seq_length=args.max_length,
-                dtype=None, load_in_4bit=False,
+                dtype=None, load_in_4bit=False, full_finetuning=True,
             )
             bf16, fp16 = True, False
             optim = "adamw_torch_fused"
@@ -319,6 +327,9 @@ def main():
     sft_extra = {}
     if args.unsloth:
         sft_extra["dataset_text_field"] = "text"
+        # Unsloth patches the tokenizer with closures that can't be pickled,
+        # so we must disable multiprocess tokenization inside SFTTrainer.
+        sft_extra["dataset_num_proc"] = 1
 
     training_args = SFTConfig(
         output_dir=output_dir,
