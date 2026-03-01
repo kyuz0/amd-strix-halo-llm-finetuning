@@ -155,7 +155,7 @@ def main():
         if args.type == "full":
             model, tokenizer = FastLanguageModel.from_pretrained(
                 model_name=args.model, max_seq_length=args.max_length,
-                dtype=None, load_in_4bit=False, full_finetuning=True,
+                dtype=None, load_in_4bit=False,
             )
             bf16, fp16 = True, False
             optim = "adamw_torch_fused"

@@ -3,8 +3,11 @@
 Memory profiling script for Unsloth vs standard HF training.
 
 Measures peak GPU memory for each (model, type, batch_size) combination using
-both standard HF and Unsloth loading. Runs 3 training steps per config to
-capture the training peak (not just model loading).
+both standard HF and Unsloth loading. Runs 3 training steps per config.
+
+CRITICAL: Each measurement runs in a SEPARATE SUBPROCESS because unsloth_zoo
+globally patches SFTTrainer at import time, which would contaminate HF-only
+measurements if both ran in the same process.
 
 Usage:
   python3 measure_unsloth_memory.py
@@ -13,37 +16,40 @@ Usage:
 
 Output:
   Prints a comparison table and saves results to unsloth_memory_profile.json.
-  The discount factors can be used to update the memory estimators in
-  benchmark_configs.py and start-finetuning-cluster.py.
 """
 import argparse
+import json
+import os
+import subprocess
+import sys
+import textwrap
+
+
+# ── Worker script template ────────────────────────────────────────────
+# This gets written to a temp file and executed in a clean subprocess
+# so that unsloth_zoo patches don't leak between measurements.
+WORKER_SCRIPT = textwrap.dedent(r'''
 import gc
 import json
 import os
-import time
+import sys
 import torch
-from datasets import load_dataset
-
 
 def cleanup():
-    """Aggressive cleanup between runs."""
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.synchronize()
         torch.cuda.ipc_collect()
         torch.cuda.empty_cache()
 
-
 def get_peak_gb():
     if torch.cuda.is_available():
         return torch.cuda.max_memory_allocated() / 1e9
     return 0.0
 
-
 def prepare_dataset():
-    """Load and format the standard benchmark dataset."""
+    from datasets import load_dataset
     ds = load_dataset("Abirate/english_quotes", split="train").shuffle(seed=42).select(range(200))
-
     def format_chat(ex):
         return {
             "messages": [
@@ -51,13 +57,10 @@ def prepare_dataset():
                 {"role": "assistant", "content": f"{ex['quote']} - {ex['author']}"},
             ]
         }
-
     ds = ds.map(format_chat, remove_columns=ds.column_names)
     return ds.train_test_split(test_size=0.2)
 
-
 def measure_hf(model_id, train_type, batch_size, max_length, ds):
-    """Measure peak memory using standard HF loading."""
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
     from trl import SFTConfig, SFTTrainer
@@ -75,8 +78,8 @@ def measure_hf(model_id, train_type, batch_size, max_length, ds):
         )
         lora_config = LoraConfig(
             r=16, lora_alpha=32,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                            "gate_proj", "up_proj", "down_proj"],
+            target_modules=["q_proj","k_proj","v_proj","o_proj",
+                            "gate_proj","up_proj","down_proj"],
             lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
         )
         model = get_peft_model(model, lora_config)
@@ -90,8 +93,8 @@ def measure_hf(model_id, train_type, batch_size, max_length, ds):
         model = prepare_model_for_kbit_training(model)
         lora_config = LoraConfig(
             r=16, lora_alpha=32,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                            "gate_proj", "up_proj", "down_proj"],
+            target_modules=["q_proj","k_proj","v_proj","o_proj",
+                            "gate_proj","up_proj","down_proj"],
             lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
         )
         model = get_peft_model(model, lora_config)
@@ -109,8 +112,8 @@ def measure_hf(model_id, train_type, batch_size, max_length, ds):
         model.config.use_cache = False
         lora_config = LoraConfig(
             r=16, lora_alpha=32,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                            "gate_proj", "up_proj", "down_proj"],
+            target_modules=["q_proj","k_proj","v_proj","o_proj",
+                            "gate_proj","up_proj","down_proj"],
             lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
         )
         model = get_peft_model(model, lora_config)
@@ -119,20 +122,15 @@ def measure_hf(model_id, train_type, batch_size, max_length, ds):
     use_grad_ckpt = train_type in ("8bit-lora", "qlora")
     training_args = SFTConfig(
         output_dir="/tmp/measure-hf",
-        max_length=max_length,
-        packing=False,
-        num_train_epochs=1,
-        max_steps=3,
+        max_length=max_length, packing=False,
+        num_train_epochs=1, max_steps=3,
         per_device_train_batch_size=batch_size,
         gradient_checkpointing=use_grad_ckpt,
         gradient_checkpointing_kwargs={"use_reentrant": False} if use_grad_ckpt else None,
-        optim=optim,
-        logging_steps=1,
-        save_strategy="no",
-        eval_strategy="no",
+        optim=optim, logging_steps=1,
+        save_strategy="no", eval_strategy="no",
         bf16=True, fp16=False,
-        lr_scheduler_type="constant",
-        report_to="none",
+        lr_scheduler_type="constant", report_to="none",
         dataset_kwargs={"add_special_tokens": False, "append_concat_token": True},
     )
 
@@ -140,18 +138,12 @@ def measure_hf(model_id, train_type, batch_size, max_length, ds):
         model=model, args=training_args,
         train_dataset=ds["train"], processing_class=tokenizer,
     )
-
     torch.cuda.reset_peak_memory_stats()
     trainer.train()
-    peak = get_peak_gb()
-
-    del trainer, model
-    cleanup()
-    return peak
+    return get_peak_gb()
 
 
 def measure_unsloth(model_id, train_type, batch_size, max_length, ds):
-    """Measure peak memory using Unsloth loading."""
     os.environ["UNSLOTH_SKIP_TORCHVISION_CHECK"] = "1"
     from unsloth import FastLanguageModel
     from unsloth.chat_templates import get_chat_template
@@ -170,8 +162,8 @@ def measure_unsloth(model_id, train_type, batch_size, max_length, ds):
         )
         model = FastLanguageModel.get_peft_model(
             model, r=16, lora_alpha=32,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                            "gate_proj", "up_proj", "down_proj"],
+            target_modules=["q_proj","k_proj","v_proj","o_proj",
+                            "gate_proj","up_proj","down_proj"],
             lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
         )
         optim = "adamw_torch_fused"
@@ -182,8 +174,8 @@ def measure_unsloth(model_id, train_type, batch_size, max_length, ds):
         )
         model = FastLanguageModel.get_peft_model(
             model, r=16, lora_alpha=32,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                            "gate_proj", "up_proj", "down_proj"],
+            target_modules=["q_proj","k_proj","v_proj","o_proj",
+                            "gate_proj","up_proj","down_proj"],
             lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
         )
         optim = "adamw_8bit"
@@ -195,43 +187,33 @@ def measure_unsloth(model_id, train_type, batch_size, max_length, ds):
         model.config.use_cache = False
         model = FastLanguageModel.get_peft_model(
             model, r=16, lora_alpha=32,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                            "gate_proj", "up_proj", "down_proj"],
+            target_modules=["q_proj","k_proj","v_proj","o_proj",
+                            "gate_proj","up_proj","down_proj"],
             lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
         )
         optim = "paged_adamw_8bit"
 
-    # Pre-format dataset with chat template
     tokenizer = get_chat_template(tokenizer, chat_template="gemma-3")
-
     def apply_template(examples):
         texts = [tokenizer.apply_chat_template(
             m, tokenize=False, add_generation_prompt=False
         ).removeprefix('<bos>') for m in examples["messages"]]
         return {"text": texts}
-
-    ds_formatted = {
-        "train": ds["train"].map(apply_template, batched=True),
-    }
+    ds_formatted = {"train": ds["train"].map(apply_template, batched=True)}
 
     use_grad_ckpt = train_type in ("8bit-lora", "qlora")
     training_args = SFTConfig(
         output_dir="/tmp/measure-unsloth",
-        dataset_text_field="text",
-        max_length=max_length,
-        packing=False,
-        num_train_epochs=1,
-        max_steps=3,
+        dataset_text_field="text", dataset_num_proc=1,
+        max_length=max_length, packing=False,
+        num_train_epochs=1, max_steps=3,
         per_device_train_batch_size=batch_size,
         gradient_checkpointing=use_grad_ckpt,
         gradient_checkpointing_kwargs={"use_reentrant": False} if use_grad_ckpt else None,
-        optim=optim,
-        logging_steps=1,
-        save_strategy="no",
-        eval_strategy="no",
+        optim=optim, logging_steps=1,
+        save_strategy="no", eval_strategy="no",
         bf16=True, fp16=False,
-        lr_scheduler_type="constant",
-        report_to="none",
+        lr_scheduler_type="constant", report_to="none",
         dataset_kwargs={"add_special_tokens": False, "append_concat_token": True},
     )
 
@@ -239,14 +221,52 @@ def measure_unsloth(model_id, train_type, batch_size, max_length, ds):
         model=model, args=training_args,
         train_dataset=ds_formatted["train"], processing_class=tokenizer,
     )
-
     torch.cuda.reset_peak_memory_stats()
     trainer.train()
-    peak = get_peak_gb()
+    return get_peak_gb()
 
-    del trainer, model
-    cleanup()
-    return peak
+
+if __name__ == "__main__":
+    cfg = json.loads(sys.argv[1])
+    ds = prepare_dataset()
+    engine = cfg["engine"]
+    try:
+        if engine == "hf":
+            peak = measure_hf(cfg["model_id"], cfg["type"], cfg["batch_size"], cfg["max_length"], ds)
+        else:
+            peak = measure_unsloth(cfg["model_id"], cfg["type"], cfg["batch_size"], cfg["max_length"], ds)
+        print(json.dumps({"peak_gb": round(peak, 2)}))
+    except Exception as e:
+        print(json.dumps({"error": str(e)}))
+''')
+
+
+def run_worker(config: dict) -> dict:
+    """Run a single measurement in a clean subprocess."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        f.write(WORKER_SCRIPT)
+        worker_path = f.name
+
+    try:
+        result = subprocess.run(
+            [sys.executable, worker_path, json.dumps(config)],
+            capture_output=True, text=True, timeout=600,
+        )
+        # Find the JSON output (last line of stdout that looks like JSON)
+        for line in reversed(result.stdout.strip().split("\n")):
+            line = line.strip()
+            if line.startswith("{"):
+                return json.loads(line)
+        # No JSON found — return stderr as error
+        return {"error": result.stderr[-500:] if result.stderr else "No output"}
+    except subprocess.TimeoutExpired:
+        return {"error": "TIMEOUT (>600s)"}
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        os.unlink(worker_path)
 
 
 def main():
@@ -263,9 +283,6 @@ def main():
                         help="Only measure HF baseline (skip Unsloth)")
     args = parser.parse_args()
 
-    print("Loading dataset...")
-    ds = prepare_dataset()
-
     results = []
     total = len(args.models) * len(args.types) * len(args.batch_sizes)
     idx = 0
@@ -278,40 +295,37 @@ def main():
                 label = f"[{idx}/{total}] {name} {train_type} batch={batch_size}"
 
                 entry = {
-                    "model": name,
-                    "model_id": model_id,
-                    "type": train_type,
-                    "batch_size": batch_size,
+                    "model": name, "model_id": model_id,
+                    "type": train_type, "batch_size": batch_size,
                     "max_length": args.max_length,
                 }
 
-                # Measure HF
+                base_cfg = {"model_id": model_id, "type": train_type,
+                            "batch_size": batch_size, "max_length": args.max_length}
+
+                # Measure HF (in clean subprocess — no unsloth_zoo patches)
                 if not args.unsloth_only:
                     print(f"\n{label} — HF ...", end=" ", flush=True)
-                    try:
-                        hf_peak = measure_hf(model_id, train_type, batch_size, args.max_length, ds)
-                        entry["hf_peak_gb"] = round(hf_peak, 2)
-                        print(f"{hf_peak:.2f} GB")
-                    except Exception as e:
+                    result = run_worker({**base_cfg, "engine": "hf"})
+                    if "peak_gb" in result:
+                        entry["hf_peak_gb"] = result["peak_gb"]
+                        print(f"{result['peak_gb']:.2f} GB")
+                    else:
                         entry["hf_peak_gb"] = None
-                        entry["hf_error"] = str(e)
-                        print(f"FAILED: {e}")
-                    cleanup()
-                    time.sleep(2)
+                        entry["hf_error"] = result["error"]
+                        print(f"FAILED: {result['error'][:200]}")
 
-                # Measure Unsloth
+                # Measure Unsloth (in clean subprocess)
                 if not args.hf_only:
                     print(f"{label} — Unsloth ...", end=" ", flush=True)
-                    try:
-                        us_peak = measure_unsloth(model_id, train_type, batch_size, args.max_length, ds)
-                        entry["unsloth_peak_gb"] = round(us_peak, 2)
-                        print(f"{us_peak:.2f} GB")
-                    except Exception as e:
+                    result = run_worker({**base_cfg, "engine": "unsloth"})
+                    if "peak_gb" in result:
+                        entry["unsloth_peak_gb"] = result["peak_gb"]
+                        print(f"{result['peak_gb']:.2f} GB")
+                    else:
                         entry["unsloth_peak_gb"] = None
-                        entry["unsloth_error"] = str(e)
-                        print(f"FAILED: {e}")
-                    cleanup()
-                    time.sleep(2)
+                        entry["unsloth_error"] = result["error"]
+                        print(f"FAILED: {result['error'][:200]}")
 
                 # Compute discount
                 hf_val = entry.get("hf_peak_gb")
@@ -339,12 +353,11 @@ def main():
         print(f"{r['model']:<16} {r['type']:<10} {r['batch_size']:<6} "
               f"{hf_str:<10} {us_str:<14} {disc_str:<10}")
 
-    # Compute average discounts per type
+    # Average discounts per type
     type_discounts = {}
     for r in results:
         if r.get("discount"):
-            tt = r["type"]
-            type_discounts.setdefault(tt, []).append(r["discount"])
+            type_discounts.setdefault(r["type"], []).append(r["discount"])
 
     if type_discounts:
         print(f"\nAverage discounts (unsloth/hf) per type:")
