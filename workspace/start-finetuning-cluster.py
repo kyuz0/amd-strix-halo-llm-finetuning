@@ -88,7 +88,12 @@ _MODEL_PARAMS_B = {
     "google/gemma-3-27b-it": 27.0,
 }
 
-def _estimate_memory(model_id, train_type, strategy, batch_size, max_length, world_size):
+# Calibrated from measure_unsloth_memory.py on Strix Halo (Gemma 1B + 4B).
+_UNSLOTH_DISCOUNT = {
+    "full": 0.29, "lora": 0.39, "8bit-lora": 0.39, "qlora": 1.30,
+}
+
+def _estimate_memory(model_id, train_type, strategy, batch_size, max_length, world_size, use_unsloth=False):
     """Estimate peak GPU memory in GB per node. Conservative estimate."""
     params_b = _MODEL_PARAMS_B.get(model_id, 1.0)
     params = params_b * 1e9
@@ -124,7 +129,11 @@ def _estimate_memory(model_id, train_type, strategy, batch_size, max_length, wor
     use_ckpt = strategy == "fsdp" or train_type in ("8bit-lora", "qlora")
     activations = act_per_layer * (layers ** 0.5 if use_ckpt else layers)
 
-    return state + activations + 2.0  # +2GB overhead
+    base = state + activations + 2.0  # +2GB overhead
+    if use_unsloth:
+        discount = _UNSLOTH_DISCOUNT.get(train_type, 1.0)
+        return base * discount
+    return base
 
 def launch_training(mode, head_ip, worker_ip, force_ethernet, enable_nccl_debug):
     models = ["google/gemma-3-1b-it", "google/gemma-3-4b-it", "google/gemma-3-12b-it", "google/gemma-3-27b-it"]
@@ -229,7 +238,7 @@ def launch_training(mode, head_ip, worker_ip, force_ethernet, enable_nccl_debug)
 
     # ── Memory estimation check ────────────────────────────────────
     world_size = 2 if mode == "Multi-Node" else 1
-    est_gb = _estimate_memory(model_id, train_type, strategy, current_batch, current_ctx, world_size)
+    est_gb = _estimate_memory(model_id, train_type, strategy, current_batch, current_ctx, world_size, use_unsloth)
     available_gb = 120  # 128GB - ~8GB OS overhead
 
     if est_gb > available_gb:

@@ -28,7 +28,16 @@ MODEL_PARAMS = {
     "google/gemma-3-27b-it": 27.0,
 }
 
-def estimate_memory_gb(model_name, train_type, strategy, batch_size, max_length, world_size):
+# Calibrated from measure_unsloth_memory.py on Strix Halo (Gemma 1B + 4B).
+# Discount = unsloth_peak / hf_peak. Values <1 = Unsloth uses less memory.
+UNSLOTH_DISCOUNT = {
+    "full": 0.29,        # Unsloth uses ~29% of HF memory
+    "lora": 0.39,        # Unsloth uses ~39% of HF memory
+    "8bit-lora": 0.39,   # conservative: same as lora (not yet profiled)
+    "qlora": 1.30,       # Unsloth actually uses ~30% MORE for qlora
+}
+
+def estimate_memory_gb(model_name, train_type, strategy, batch_size, max_length, world_size, use_unsloth=False):
     """Estimate peak GPU memory in GB per node."""
     params_b = MODEL_PARAMS.get(model_name, 1.0)
     params = params_b * 1e9
@@ -63,19 +72,23 @@ def estimate_memory_gb(model_name, train_type, strategy, batch_size, max_length,
     use_ckpt = strategy == "fsdp" or train_type in ("8bit-lora", "qlora")
     activations = act_per_layer * (layers ** 0.5 if use_ckpt else layers)
 
-    return state + activations + 2.0
+    base = state + activations + 2.0
+    if use_unsloth:
+        discount = UNSLOTH_DISCOUNT.get(train_type, 1.0)
+        return base * discount
+    return base
 
 
-def pick_strategy(model, train_type, batch, max_length, world_size, margin):
+def pick_strategy(model, train_type, batch, max_length, world_size, margin, use_unsloth=False):
     """Pick best strategy: DDP if it fits, else FSDP if it fits, else None."""
     available = 120
     safe = available * margin
 
-    ddp_est = estimate_memory_gb(model, train_type, "ddp", batch, max_length, world_size)
+    ddp_est = estimate_memory_gb(model, train_type, "ddp", batch, max_length, world_size, use_unsloth)
     if ddp_est <= safe:
         return "ddp", ddp_est
 
-    if world_size > 1:
+    if world_size > 1 and not use_unsloth:  # Unsloth doesn't support FSDP
         fsdp_est = estimate_memory_gb(model, train_type, "fsdp", batch, max_length, world_size)
         if fsdp_est <= safe:
             return "fsdp", fsdp_est
@@ -219,7 +232,7 @@ def main():
         for train_type in args.types:
             for batch in args.batches:
                 strategy, est = pick_strategy(
-                    model, train_type, batch, args.max_length, world_size, args.margin
+                    model, train_type, batch, args.max_length, world_size, args.margin, use_unsloth
                 )
                 if strategy is None:
                     skipped.append((model, train_type, batch, est))

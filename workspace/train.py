@@ -157,6 +157,10 @@ def main():
                 model_name=args.model, max_seq_length=args.max_length,
                 dtype=None, load_in_4bit=False,
             )
+            # Old Unsloth freezes all params expecting LoRA — re-enable for full FT.
+            # Unsloth's kernel patches (attention/MLP) remain active for speed.
+            for param in model.parameters():
+                param.requires_grad_(True)
             bf16, fp16 = True, False
             optim = "adamw_torch_fused"
 
