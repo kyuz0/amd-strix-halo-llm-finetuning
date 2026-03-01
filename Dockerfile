@@ -115,7 +115,7 @@ RUN python -m pip install --no-cache-dir \
     safetensors \
     sentencepiece \
     huggingface-hub \
-    trl \
+    trl==0.24.0 \
     einops \
     tqdm==4.67.1 \
     ipywidgets==8.1.7 \
