@@ -80,6 +80,52 @@ def get_rdma_env_script(head_ip, ip, iface, force_ethernet, enable_nccl_debug):
         """
     return env_script
 
+# Approximate parameter counts for memory estimation
+_MODEL_PARAMS_B = {
+    "google/gemma-3-1b-it": 1.0,
+    "google/gemma-3-4b-it": 4.0,
+    "google/gemma-3-12b-it": 12.0,
+    "google/gemma-3-27b-it": 27.0,
+}
+
+def _estimate_memory(model_id, train_type, strategy, batch_size, max_length, world_size):
+    """Estimate peak GPU memory in GB per node. Conservative estimate."""
+    params_b = _MODEL_PARAMS_B.get(model_id, 1.0)
+    params = params_b * 1e9
+    shard = world_size if strategy == "fsdp" else 1
+
+    if train_type == "full":
+        weights = params * 2  # bf16
+        grads = params * 2
+        optim = params * 4 * 2  # Adam fp32, 2 states
+    elif train_type == "lora":
+        weights = params * 2
+        t = params * 0.02
+        grads, optim = t * 2, t * 4 * 2
+    elif train_type == "8bit-lora":
+        weights = params * 1
+        t = params * 0.02
+        grads, optim = t * 2, t * 4 * 2
+    elif train_type == "qlora":
+        weights = params * 0.5
+        t = params * 0.02
+        grads, optim = t * 2, t * 4 * 2
+    else:
+        return 999
+
+    state = (weights + grads + optim) / shard / 1e9
+    if strategy == "fsdp":
+        state += (weights * 0.1) / 1e9  # peak during gather
+
+    # Activations estimate
+    hidden = {1.0: 1024, 4.0: 2048, 12.0: 3840, 27.0: 5184}.get(params_b, 2048)
+    layers = {1.0: 26, 4.0: 34, 12.0: 48, 27.0: 62}.get(params_b, 32)
+    act_per_layer = (batch_size * max_length * hidden * 4) / 1e9
+    use_ckpt = strategy == "fsdp" or train_type in ("8bit-lora", "qlora")
+    activations = act_per_layer * (layers ** 0.5 if use_ckpt else layers)
+
+    return state + activations + 2.0  # +2GB overhead
+
 def launch_training(mode, head_ip, worker_ip, force_ethernet, enable_nccl_debug):
     models = ["google/gemma-3-1b-it", "google/gemma-3-4b-it", "google/gemma-3-12b-it", "google/gemma-3-27b-it"]
     types = ["lora", "full", "8bit-lora", "qlora"]
@@ -168,6 +214,34 @@ def launch_training(mode, head_ip, worker_ip, force_ethernet, enable_nccl_debug)
     subprocess.run(["clear"])
     model_id = models[current_model_idx]
     train_type = types[current_type_idx]
+
+    # ── Memory estimation check ────────────────────────────────────
+    world_size = 2 if mode == "Multi-Node" else 1
+    strategy = strategies[current_strategy_idx]
+    est_gb = _estimate_memory(model_id, train_type, strategy, current_batch, current_ctx, world_size)
+    available_gb = 120  # 128GB - ~8GB OS overhead
+
+    if est_gb > available_gb:
+        msg = (f"WARNING: This configuration is estimated to need ~{est_gb:.0f} GB per node.\n"
+               f"Available: ~{available_gb} GB (128 GB minus OS overhead).\n\n"
+               f"Model: {model_id} ({train_type})\n"
+               f"Strategy: {strategy.upper()}, Batch: {current_batch}\n\n"
+               f"This WILL cause a system OOM that requires REBOOT!\n\n"
+               f"Suggestions:\n"
+               f"- Use LoRA or QLoRA instead of full fine-tuning\n"
+               f"- Reduce batch size\n"
+               f"- Use FSDP to shard the model across nodes\n\n"
+               f"Proceed anyway?")
+        warn_result = run_dialog(["--title", "⚠️ MEMORY WARNING", "--yesno", msg, "22", "65"])
+        if warn_result is None:
+            return
+    elif est_gb > available_gb * 0.85:
+        msg = (f"This config is estimated to use ~{est_gb:.0f} GB of {available_gb} GB available.\n"
+               f"It may be tight. Consider reducing batch size if it OOMs.\n\n"
+               f"Proceed?")
+        warn_result = run_dialog(["--title", "⚠️ Memory Tight", "--yesno", msg, "12", "65"])
+        if warn_result is None:
+            return
     
     # Common arguments
     strategy = strategies[current_strategy_idx]
