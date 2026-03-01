@@ -109,7 +109,7 @@ RUN pip uninstall unsloth unsloth_zoo -y && \
 # --- LLM runtime stack ---
 RUN python -m pip install --no-cache-dir \
     jq \
-    transformers \
+    transformers==4.56.2 \
     peft \
     accelerate \
     safetensors \
