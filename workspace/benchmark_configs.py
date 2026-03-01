@@ -191,8 +191,12 @@ def main():
     parser.add_argument("--margin", type=float, default=0.85)
     parser.add_argument("--run", action="store_true",
                         help="Actually launch each config on the cluster for 1 epoch")
+    parser.add_argument("--rerun", action="store_true",
+                        help="Re-run all configs, ignoring previous results")
     parser.add_argument("--timeout", type=int, default=600,
                         help="Timeout per run in seconds (default: 600)")
+    parser.add_argument("--results-file", type=str, default="benchmark_results.json",
+                        help="Results file (default: benchmark_results.json)")
     args = parser.parse_args()
 
     world_size = args.world_size or int(os.environ.get("WORLD_SIZE", "2"))
@@ -249,17 +253,53 @@ def main():
         print("\nAdd --run to actually launch training on the cluster.")
         return
 
-    # ── Phase 3: Run benchmarks ────────────────────────────────────
-    results = []
+    # ── Phase 3: Load previous results & skip completed ────────────
+    prev_results = []
+    completed_keys = set()
+    if not args.rerun and os.path.exists(args.results_file):
+        try:
+            with open(args.results_file) as f:
+                prev_results = json.load(f)
+            for r in prev_results:
+                key = f"{r['model']}|{r['type']}|{r['strategy']}|{r['batch']}|{r['accum']}"
+                completed_keys.add(key)
+            print(f"\n📂 Loaded {len(prev_results)} previous results from {args.results_file}")
+        except (json.JSONDecodeError, KeyError):
+            print(f"\n⚠️  Could not parse {args.results_file}, starting fresh")
+            prev_results = []
+
+    # Filter plan to only new configs
+    remaining = []
+    skipped_done = 0
+    for entry in plan:
+        model, tt, strat, batch, accum, est = entry
+        name = model.split("/")[-1]
+        key = f"{name}|{tt}|{strat}|{batch}|{accum}"
+        if key in completed_keys:
+            skipped_done += 1
+        else:
+            remaining.append(entry)
+
+    if skipped_done > 0:
+        print(f"⏭️  Skipping {skipped_done} already-benchmarked configs")
+    if not remaining:
+        print("\n✅ All configs already benchmarked! Use --rerun to re-run.")
+        _print_summary(prev_results)
+        return
+
+    print(f"🔄 {len(remaining)} configs to run")
+
+    # ── Phase 4: Run benchmarks ────────────────────────────────────
+    all_results = list(prev_results)
 
     print(f"\n{'='*95}")
     print(f"RUNNING BENCHMARKS — {mode_str}")
     print(f"Each config runs 1 epoch. Timeout: {args.timeout}s")
     print(f"{'='*95}")
 
-    for i, (model, tt, strat, batch, accum, est) in enumerate(plan, 1):
+    for i, (model, tt, strat, batch, accum, est) in enumerate(remaining, 1):
         name = model.split("/")[-1]
-        label = f"[{i}/{len(plan)}] {name} {tt} {strat} batch={batch} accum={accum}"
+        label = f"[{i}/{len(remaining)}] {name} {tt} {strat} batch={batch} accum={accum}"
         print(f"\n{'─'*80}")
         print(f"▶ {label} (est: {est:.0f}GB)")
 
@@ -277,6 +317,9 @@ def main():
                 train_script, train_args, timeout=args.timeout
             )
 
+        result = {"model": name, "type": tt, "strategy": strat,
+                  "batch": batch, "accum": accum, "est_gb": round(est, 1)}
+
         if rc == 0:
             time_lines = [l for l in stdout.split("\n") if "Training time:" in l]
             peak_lines = [l for l in stdout.split("\n") if "Peak GPU" in l]
@@ -290,30 +333,28 @@ def main():
             for l in loss_lines[-1:]:
                 print(f"  {l.strip()}")
 
-            results.append({
-                "model": name, "type": tt, "strategy": strat,
-                "batch": batch, "accum": accum, "est_gb": round(est, 1),
-                "status": "OK", "time_s": round(elapsed, 1),
-            })
+            result.update({"status": "OK", "time_s": round(elapsed, 1)})
         elif rc == -1:
             print(f"  ⏰ TIMEOUT (>{args.timeout}s)")
-            results.append({
-                "model": name, "type": tt, "strategy": strat,
-                "batch": batch, "accum": accum, "est_gb": round(est, 1),
-                "status": "TIMEOUT", "time_s": args.timeout,
-            })
+            result.update({"status": "TIMEOUT", "time_s": args.timeout})
         else:
             is_oom = "OutOfMemoryError" in stderr or "out of memory" in stderr.lower()
             status = "OOM" if is_oom else "FAIL"
             print(f"  ❌ {status} ({elapsed:.1f}s)")
             print(f"  {stderr[-200:]}")
-            results.append({
-                "model": name, "type": tt, "strategy": strat,
-                "batch": batch, "accum": accum, "est_gb": round(est, 1),
-                "status": status, "time_s": round(elapsed, 1),
-            })
+            result.update({"status": status, "time_s": round(elapsed, 1)})
 
-    # ── Phase 4: Summary ───────────────────────────────────────────
+        # Save after each run
+        all_results.append(result)
+        with open(args.results_file, "w") as f:
+            json.dump(all_results, f, indent=2)
+        print(f"  💾 Saved ({len(all_results)} total results in {args.results_file})")
+
+    _print_summary(all_results)
+
+
+def _print_summary(results):
+    """Print final summary table."""
     print(f"\n{'='*95}")
     print("BENCHMARK RESULTS")
     print(f"{'='*95}")
@@ -326,10 +367,6 @@ def main():
     ok = [r for r in results if r["status"] == "OK"]
     fail = [r for r in results if r["status"] != "OK"]
     print(f"\n✅ {len(ok)} passed | ❌ {len(fail)} failed")
-
-    with open("benchmark_results.json", "w") as f:
-        json.dump(results, f, indent=2)
-    print("Results saved to benchmark_results.json")
 
 
 if __name__ == "__main__":
