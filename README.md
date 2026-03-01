@@ -56,6 +56,57 @@ Notes: Gemma results are 2 epochs at max_length 512. GPT-OSS uses LoRA with MXFP
 
 ---
 
+## Multi-Node Training (2× Strix Halo)
+
+Two strategies for distributing training across nodes:
+
+| | DDP | FSDP |
+|---|---|---|
+| **What** | Replicate full model on each node, sync gradients | Shard model across nodes |
+| **When** | Model fits in one node's memory | Model too large for one node |
+| **Speed** | Faster (less communication) | Slower (more communication) |
+| **Use for** | 1B, 4B, 12B (LoRA/QLoRA), 12B (full w/ FSDP) | 12B full, 27B LoRA |
+| **Docs** | [PyTorch DDP](https://pytorch.org/docs/stable/notes/ddp.html) | [PyTorch FSDP](https://pytorch.org/docs/stable/fsdp.html) |
+
+**TLDR**: Use DDP unless you get OOM, then switch to FSDP. The launcher picks the right one.
+
+### Memory budget (128 GB per node, ~120 GB usable)
+
+Full fine-tuning needs **weights + gradients + optimizer (2× Adam states)** ≈ `params × 16 bytes`. For 27B that's **324 GB** — impossible even with FSDP on 2 nodes. Use **LoRA** or **QLoRA** for 27B.
+
+### Launcher (`start-finetuning-cluster.py`)
+
+Interactive TUI to configure and launch training. Includes:
+- Model, type, batch size, learning rate, context length
+- **Strategy** (DDP/FSDP) — only shown in multi-node mode
+- **Gradient accumulation** — amortizes network sync cost (default: 1)
+- **Memory estimation** — warns before launching configs that would OOM
+
+```bash
+toolbox enter strix-halo-llm-finetuning
+cd ~/finetuning-workspace/workspace
+python3 start-finetuning-cluster.py
+```
+
+### Benchmark (`benchmark_configs.py`)
+
+Estimates memory for all model×type×batch combos and optionally runs each on the cluster:
+
+```bash
+python3 benchmark_configs.py          # preview plan (safe)
+python3 benchmark_configs.py --run    # run each config for 1 epoch
+```
+
+### RDMA / InfiniBand
+
+For multi-node, the toolbox must map `/dev/infiniband` for RDMA. Use the provided `refresh-toolbox.sh` which auto-detects InfiniBand devices:
+
+```bash
+./refresh-toolbox.sh    # recreates toolbox with RDMA support
+```
+
+---
+
 ## 1) Create the toolbox
 
 ```bash
