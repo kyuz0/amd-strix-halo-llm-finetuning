@@ -206,8 +206,8 @@ def main():
                         help="Actually launch each config on the cluster for 1 epoch")
     parser.add_argument("--rerun", action="store_true",
                         help="Re-run all configs, ignoring previous results")
-    parser.add_argument("--timeout", type=int, default=600,
-                        help="Timeout per run in seconds (default: 600)")
+    parser.add_argument("--timeout", type=int, default=7200,
+                        help="Timeout per run in seconds (default: 7200)")
     parser.add_argument("--results-file", type=str, default="benchmark_results.json",
                         help="Results file (default: benchmark_results.json)")
     parser.add_argument("--unsloth", action="store_true",
@@ -282,6 +282,8 @@ def main():
             with open(args.results_file) as f:
                 prev_results = json.load(f)
             for r in prev_results:
+                if r.get("status") != "OK":
+                    continue  # Retry failed/timeout/oom configs
                 unsloth_key = "unsloth" if r.get("unsloth", False) else "hf"
                 key = f"{r['model']}|{r['type']}|{r['strategy']}|{r['batch']}|{r['accum']}|{unsloth_key}"
                 completed_keys.add(key)
