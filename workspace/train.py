@@ -20,6 +20,7 @@ import argparse
 import sys
 import gc
 import os
+import logging
 
 # Unsloth MUST be imported before transformers/peft/trl to apply patches.
 # We check sys.argv early to do this before any other ML imports.
@@ -33,6 +34,20 @@ from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model, Pe
 from trl import SFTConfig, SFTTrainer
 from trl.trainer.utils import get_kbit_device_map
 from datasets import load_dataset
+
+# ── Silence bitsandbytes MatMul8bitLt warning spam ────────────────────
+# Recent bitsandbytes versions emit this warning on every forward pass,
+# flooding the console with thousands of identical messages.
+class _NoMatMul8bitLt(logging.Filter):
+    def filter(self, record):
+        return "MatMul8bitLt" not in record.getMessage()
+
+for _bnb_logger_name in (
+    "bitsandbytes",
+    "bitsandbytes.autograd",
+    "bitsandbytes.autograd._functions",
+):
+    logging.getLogger(_bnb_logger_name).addFilter(_NoMatMul8bitLt())
 
 
 class DebugCallback(TrainerCallback):
