@@ -11,7 +11,7 @@ if ! command -v podman &> /dev/null; then
 fi
 
 echo "=== 1. Building Container ==="
-podman build -t llm-finetuning .
+podman build --no-cache -t llm-finetuning .
 
 echo "=== 2. Login to Docker Hub ==="
 podman login docker.io
