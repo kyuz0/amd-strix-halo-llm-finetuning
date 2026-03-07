@@ -5,7 +5,7 @@ FROM registry.fedoraproject.org/fedora:43 AS builder
 RUN dnf -y --nodocs --setopt=install_weak_deps=False install \
     make gcc gcc-c++ cmake lld clang clang-devel compiler-rt libcurl-devel \
     radeontop git vim patch curl ninja-build tar libatomic xz \
-    python3.13 python3.13-devel pip aria2c jupyterlab \
+    python3.13 python3.13-devel pip aria2c \
     gperftools-libs libdrm-devel zlib-devel openssl openssl-devel numactl-devel \
     libibverbs-utils perftest jq dialog iproute \
     && dnf clean all && rm -rf /var/cache/dnf/*
@@ -121,7 +121,8 @@ RUN python -m pip install --no-cache-dir \
     ipywidgets==8.1.7 \
     ipykernel==6.30.1 \
     traitlets==5.14.3 \
-    jupyter_core==5.8.1
+    jupyter_core==5.8.1 \
+    jupyterlab
 
 # --- Unsloth ---
 WORKDIR /opt
@@ -165,10 +166,9 @@ RUN echo "Installing Custom RCCL..." && \
     find /opt/venv -name "librccl.so.1" -exec cp -fv /tmp/librccl.so.1 {} + && \
     rm /tmp/librccl.so.1
 
-# Force Jupyter to default to the venv interpreter
-RUN /opt/venv/bin/python -m ipykernel install --name=venv --display-name "Python (venv)" --prefix=/usr/local && \
-    /opt/venv/bin/python -m ipykernel install --name=python3 --display-name "Python (venv)" --prefix=/usr/local && \
-    /opt/venv/bin/python -m ipykernel install --name=python3 --display-name "Python (venv)" --prefix=/usr
+# Jupyter is now installed in the venv (via pip), so the default python3 kernel
+# automatically points at /opt/venv/bin/python. Just set a friendly display name.
+RUN /opt/venv/bin/python -m ipykernel install --name=python3 --display-name "Python (venv)" --prefix=/opt/venv
 
 
 CMD ["/bin/bash"]
