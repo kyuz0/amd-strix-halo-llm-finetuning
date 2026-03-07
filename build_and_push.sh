@@ -43,7 +43,7 @@ else
 fi
 
 echo "=== 2. Building Container ==="
-podman build -t llm-finetuning .
+podman build  --no-cache -t llm-finetuning .
 
 echo "=== 3. Login to Docker Hub ==="
 podman login docker.io
