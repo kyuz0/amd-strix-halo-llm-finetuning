@@ -153,6 +153,18 @@ RUN chmod 0644 /etc/profile.d/*.sh
 RUN chmod 0644 /etc/profile.d/*.sh
 RUN printf 'ulimit -S -c 0\n' > /etc/profile.d/90-nocoredump.sh && chmod 0644 /etc/profile.d/90-nocoredump.sh
 
+# --- Install Custom RCCL (gfx1151) ---
+# Requires custom_libs/librccl.so.1.gz to be present (see PUSHING_TO_DOCKERHUB-NOTES.md)
+COPY custom_libs/librccl.so.1.gz /tmp/librccl.so.1.gz
+RUN echo "Installing Custom RCCL..." && \
+    gzip -d /tmp/librccl.so.1.gz && \
+    chmod 755 /tmp/librccl.so.1 && \
+    # Replace /opt/rocm library
+    cp -fv /tmp/librccl.so.1 /opt/rocm-7.0/lib/librccl.so.1.0 && \
+    # Replace /opt/venv library (find where it is installed)
+    find /opt/venv -name "librccl.so.1" -exec cp -fv /tmp/librccl.so.1 {} + && \
+    rm /tmp/librccl.so.1
+
 # Force Jupyter to default to the venv interpreter
 RUN /opt/venv/bin/python -m ipykernel install --name=venv --display-name "Python (venv)" --prefix=/usr/local && \
     /opt/venv/bin/python -m ipykernel install --name=python3 --display-name "Python (venv)" --prefix=/usr/local && \
