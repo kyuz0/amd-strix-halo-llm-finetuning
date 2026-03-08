@@ -142,6 +142,7 @@ def launch_training(mode, head_ip, worker_ip, force_ethernet, enable_nccl_debug)
     strategies = ["ddp", "fsdp"]
     # Defaults based on notebook
     current_model_idx = 0
+    current_dataset = "Abirate/english_quotes"
     current_type_idx = 0
     current_strategy_idx = 0
     current_batch = 4
@@ -159,23 +160,24 @@ def launch_training(mode, head_ip, worker_ip, force_ethernet, enable_nccl_debug)
         unsloth_status = "ON" if use_unsloth else "OFF"
         menu_items = [
             "1", f"Model:             {model_name}",
-            "2", f"Finetune Type:     {type_name}",
-            "3", f"Batch Size:        {current_batch}",
-            "4", f"Epochs:            {current_epochs}",
-            "5", f"Learning Rate:     {current_lr}",
-            "6", f"Max Context Len:   {current_ctx}",
-            "7", f"Grad Accumulation: {current_grad_accum}",
-            "8", f"Unsloth:           {unsloth_status}",
+            "2", f"Dataset:           {current_dataset}",
+            "3", f"Finetune Type:     {type_name}",
+            "4", f"Batch Size:        {current_batch}",
+            "5", f"Epochs:            {current_epochs}",
+            "6", f"Learning Rate:     {current_lr}",
+            "7", f"Max Context Len:   {current_ctx}",
+            "8", f"Grad Accumulation: {current_grad_accum}",
+            "9", f"Unsloth:           {unsloth_status}",
         ]
         if mode == "Multi-Node":
-            menu_items.extend(["9", f"Strategy:          {strategy_name}"])
+            menu_items.extend(["10", f"Strategy:          {strategy_name}"])
+            launch_idx = "11"
+            cancel_idx = "12"
+            item_count = "13"
+        else:
             launch_idx = "10"
             cancel_idx = "11"
             item_count = "12"
-        else:
-            launch_idx = "9"
-            cancel_idx = "10"
-            item_count = "11"
         menu_items.extend([launch_idx, "LAUNCH TRAINING", cancel_idx, "CANCEL"])
         
         menu_args = [
@@ -195,29 +197,32 @@ def launch_training(mode, head_ip, worker_ip, force_ethernet, enable_nccl_debug)
             m_choice = run_dialog(["--title", "Select Model", "--menu", "Choose a model:", "15", "60", "6"] + menu_items)
             if m_choice: current_model_idx = int(m_choice)
         elif choice == "2":
+            new_val = run_dialog(["--title", "Dataset", "--inputbox", "Enter Hugging Face ID or local path (.json/.jsonl):", "10", "65", current_dataset])
+            if new_val: current_dataset = new_val
+        elif choice == "3":
             menu_items = []
             for i, t in enumerate(types):
                 menu_items.extend([str(i), t])
             t_choice = run_dialog(["--title", "Select Type", "--menu", "Choose a finetune type:", "15", "60", "4"] + menu_items)
             if t_choice: current_type_idx = int(t_choice)
-        elif choice == "3":
+        elif choice == "4":
             new_val = run_dialog(["--title", "Batch Size", "--inputbox", "Enter Batch Size (per device):", "10", "40", str(current_batch)])
             if new_val: current_batch = int(new_val)
-        elif choice == "4":
+        elif choice == "5":
             new_val = run_dialog(["--title", "Epochs", "--inputbox", "Enter Epochs:", "10", "40", str(current_epochs)])
             if new_val: current_epochs = int(new_val)
-        elif choice == "5":
+        elif choice == "6":
             new_val = run_dialog(["--title", "Learning Rate", "--inputbox", "Enter Learning Rate:", "10", "40", str(current_lr)])
             if new_val: current_lr = new_val
-        elif choice == "6":
+        elif choice == "7":
             new_val = run_dialog(["--title", "Max Context Len", "--inputbox", "Enter Max Context Length:", "10", "40", str(current_ctx)])
             if new_val: current_ctx = int(new_val)
-        elif choice == "7":
+        elif choice == "8":
             new_val = run_dialog(["--title", "Gradient Accumulation", "--inputbox", "Steps to accumulate before gradient sync\n(higher = less network overhead, larger effective batch):", "12", "55", str(current_grad_accum)])
             if new_val: current_grad_accum = int(new_val)
-        elif choice == "8":
+        elif choice == "9":
             use_unsloth = not use_unsloth
-        elif choice == "9" and mode == "Multi-Node":
+        elif choice == "10" and mode == "Multi-Node":
             s_choice = run_dialog(["--title", "Strategy", "--menu", "DDP: replicate model (fast, needs model to fit per node)\nFSDP: shard model (for large models like 27B)", "14", "65", "2",
                                    "0", "DDP  - Data Parallel (default)",
                                    "1", "FSDP - Fully Sharded (large models)"])
@@ -264,7 +269,7 @@ def launch_training(mode, head_ip, worker_ip, force_ethernet, enable_nccl_debug)
             return
     
     # Common arguments
-    train_args = (f"--model {model_id} --type {train_type} --strategy {strategy} "
+    train_args = (f"--model {model_id} --dataset {current_dataset} --type {train_type} --strategy {strategy} "
                   f"--batch-size {current_batch} --epochs {current_epochs} "
                   f"--learning-rate {current_lr} --max-length {current_ctx} "
                   f"--gradient-accumulation {current_grad_accum}")

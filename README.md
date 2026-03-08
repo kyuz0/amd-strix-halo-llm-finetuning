@@ -42,69 +42,6 @@ This is a hobby project maintained in my spare time. If you find these toolboxes
 [![Watch the YouTube Video](https://img.youtube.com/vi/nxugSRDg_jg/maxresdefault.jpg)](https://youtu.be/nxugSRDg_jg)  
 
 
-## Performance on Strix Halo
-
-| Model | Full FT | LoRA | 8-bit + LoRA | QLoRA |
-|:------|:------:|:----:|:-------------:|:-----:|
-| Gemma-3 1B-IT | 19 GB / 2m52s | 15 GB / 2m | 13 GB / 8m | 13 GB / 9m |
-| Gemma-3 4B-IT | 46 GB / 9m | 30 GB / 5m | 21 GB / 41m | 13 GB / 9m |
-| Gemma-3 12B-IT | 115 GB / 25m | 67 GB / 13m | 43 GB / 2h38m | 26 GB / 23m |
-| Gemma-3 27B-IT | OOM | OOM | 32 GB unstable | 19 GB runs |
-| GPT-OSS-20B (MXFP4) | - | 32-38 GB / ~1h | - | - |
-
-Notes: Gemma results are 2 epochs at max_length 512. GPT-OSS uses LoRA with MXFP4 dequantized to bf16.
-
----
-
-## Multi-Node Training (2× Strix Halo)
-
-Two strategies for distributing training across nodes:
-
-| | DDP | FSDP |
-|---|---|---|
-| **What** | Replicate full model on each node, sync gradients | Shard model across nodes |
-| **When** | Model fits in one node's memory | Model too large for one node |
-| **Speed** | Faster (less communication) | Slower (more communication) |
-| **Use for** | 1B, 4B, 12B (LoRA/QLoRA), 12B (full w/ FSDP) | 12B full, 27B LoRA |
-| **Docs** | [PyTorch DDP](https://pytorch.org/docs/stable/notes/ddp.html) | [PyTorch FSDP](https://pytorch.org/docs/stable/fsdp.html) |
-
-**TLDR**: Use DDP unless you get OOM, then switch to FSDP. The launcher picks the right one.
-
-### Memory budget (128 GB per node, ~120 GB usable)
-
-Full fine-tuning needs **weights + gradients + optimizer (2× Adam states)** ≈ `params × 16 bytes`. For 27B that's **324 GB** — impossible even with FSDP on 2 nodes. Use **LoRA** or **QLoRA** for 27B.
-
-### Launcher (`start-finetuning-cluster.py`)
-
-Interactive TUI to configure and launch training. Includes:
-- Model, type, batch size, learning rate, context length
-- **Strategy** (DDP/FSDP) — only shown in multi-node mode
-- **Gradient accumulation** — amortizes network sync cost (default: 1)
-- **Memory estimation** — warns before launching configs that would OOM
-
-```bash
-toolbox enter strix-halo-llm-finetuning
-cd ~/finetuning-workspace/workspace
-python3 start-finetuning-cluster.py
-```
-
-### Benchmark (`benchmark_configs.py`)
-
-Estimates memory for all model×type×batch combos and optionally runs each on the cluster:
-
-```bash
-python3 benchmark_configs.py          # preview plan (safe)
-python3 benchmark_configs.py --run    # run each config for 1 epoch
-```
-
-### RDMA / InfiniBand
-
-For multi-node, the toolbox must map `/dev/infiniband` for RDMA. Use the provided `refresh-toolbox.sh` which auto-detects InfiniBand devices:
-
-```bash
-./refresh-toolbox.sh    # recreates toolbox with RDMA support
-```
-
 ---
 
 ## 1) Create the toolbox
@@ -226,3 +163,82 @@ Source: https://www.reddit.com/r/LocalLLaMA/comments/1m9wcdc/comment/n5gf53d/?co
 sudo grub2-mkconfig -o /boot/grub2/grub.cfg
 sudo reboot
 ```
+
+---
+
+## Performance on Strix Halo
+
+| Model | Full FT | LoRA | 8-bit + LoRA | QLoRA |
+|:------|:------:|:----:|:-------------:|:-----:|
+| Gemma-3 1B-IT | 19 GB / 2m52s | 15 GB / 2m | 13 GB / 8m | 13 GB / 9m |
+| Gemma-3 4B-IT | 46 GB / 9m | 30 GB / 5m | 21 GB / 41m | 13 GB / 9m |
+| Gemma-3 12B-IT | 115 GB / 25m | 67 GB / 13m | 43 GB / 2h38m | 26 GB / 23m |
+| Gemma-3 27B-IT | OOM | OOM | 32 GB unstable | 19 GB runs |
+| GPT-OSS-20B (MXFP4) | - | 32-38 GB / ~1h | - | - |
+
+Notes: Gemma results are 2 epochs at max_length 512. GPT-OSS uses LoRA with MXFP4 dequantized to bf16.
+
+---
+
+## Multi-Node Training (2× Strix Halo)
+
+Two strategies for distributing training across nodes:
+
+| | DDP | FSDP |
+|---|---|---|
+| **What** | Replicate full model on each node, sync gradients | Shard model across nodes |
+| **When** | Model fits in one node's memory | Model too large for one node |
+| **Speed** | Faster (less communication) | Slower (more communication) |
+| **Use for** | 1B, 4B, 12B (LoRA/QLoRA), 12B (full w/ FSDP) | 12B full, 27B LoRA |
+| **Docs** | [PyTorch DDP](https://pytorch.org/docs/stable/notes/ddp.html) | [PyTorch FSDP](https://pytorch.org/docs/stable/fsdp.html) |
+
+**TLDR**: Use DDP unless you get OOM, then switch to FSDP. The launcher picks the right one.
+
+### Memory budget (128 GB per node, ~120 GB usable)
+
+Full fine-tuning needs **weights + gradients + optimizer (2× Adam states)** ≈ `params × 16 bytes`. For 27B that's **324 GB** — impossible even with FSDP on 2 nodes. Use **LoRA** or **QLoRA** for 27B.
+
+### Launcher (`start-finetuning-cluster.py`)
+
+Interactive TUI to configure and launch training. Includes:
+- Model, type, batch size, learning rate, context length
+- **Strategy** (DDP/FSDP) — only shown in multi-node mode
+- **Gradient accumulation** — amortizes network sync cost (default: 1)
+- **Memory estimation** — warns before launching configs that would OOM
+
+```bash
+toolbox enter strix-halo-llm-finetuning
+cd ~/finetuning-workspace/workspace
+python3 start-finetuning-cluster.py
+```
+
+### Benchmark (`benchmark_configs.py`)
+
+Estimates memory for all model×type×batch combos and optionally runs each on the cluster:
+
+```bash
+python3 benchmark_configs.py          # preview plan (safe)
+python3 benchmark_configs.py --run    # run each config for 1 epoch
+```
+
+### RDMA / InfiniBand
+
+For multi-node, the toolbox must map `/dev/infiniband` for RDMA. Use the provided `refresh-toolbox.sh` which auto-detects InfiniBand devices:
+
+```bash
+./refresh-toolbox.sh    # recreates toolbox with RDMA support
+```
+
+### Custom Datasets
+
+You can use your own datasets for fine-tuning via the interactive UI (Launcher) or by passing the `--dataset` argument to `train.py`. The dataset can be either a Hugging Face repository ID (e.g., `mlabonne/guanaco-llama2-1k`, `philschmid/dolly-15k-oai-style`) or a local path to a JSON/JSONL file.
+
+**Format Requirements**:
+The custom dataset must include a `"messages"` column matching the standard Hugging Face Chat Template format. For example, a local `.jsonl` file should look like this:
+```json
+{"messages": [{"role": "user", "content": "What is the capital of France?"}, {"role": "assistant", "content": "The capital of France is Paris."}]}
+{"messages": [{"role": "user", "content": "Write a python loop."}, {"role": "assistant", "content": "for i in range(10):\n    print(i)"}]}
+```
+
+If the `Dataset` argument is left as default, the script falls back to `Abirate/english_quotes` and automatically formats it to the required structure for demonstration.
+

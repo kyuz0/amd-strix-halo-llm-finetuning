@@ -105,6 +105,8 @@ def full_cleanup(model=None, trainer=None):
 def main():
     parser = argparse.ArgumentParser(description="Multi-node Finetuning for AMD Strix Halo")
     parser.add_argument("--model", type=str, default="google/gemma-3-1b-it")
+    parser.add_argument("--dataset", type=str, default="Abirate/english_quotes",
+                        help="Hugging Face dataset ID or path to a local JSON/JSONL file.")
     parser.add_argument("--type", type=str, choices=["full", "lora", "8bit-lora", "qlora"], default="lora")
     parser.add_argument("--strategy", type=str, choices=["ddp", "fsdp"], default="ddp",
                         help="Distributed strategy: ddp (replicate model) or fsdp (shard model for large models)")
@@ -145,17 +147,29 @@ def main():
             print(f"Dist:     gradient_accumulation_steps={grad_accum} (amortize sync cost)")
 
     # ── Dataset ────────────────────────────────────────────────────────
-    ds = load_dataset("Abirate/english_quotes", split="train").shuffle(seed=42).select(range(1000))
+    if args.dataset.endswith(".json") or args.dataset.endswith(".jsonl"):
+        ds = load_dataset("json", data_files=args.dataset, split="train").shuffle(seed=42)
+    else:
+        ds = load_dataset(args.dataset, split="train").shuffle(seed=42)
 
-    def format_chat(ex):
-        return {
-            "messages": [
-                {"role": "user", "content": f"Give me a quote about: {ex['tags']}"},
-                {"role": "assistant", "content": f"{ex['quote']} - {ex['author']}"},
-            ]
-        }
+    # Legacy fallback mapping for english_quotes dataset
+    if args.dataset == "Abirate/english_quotes":
+        ds = ds.select(range(1000))
+        def format_chat(ex):
+            return {
+                "messages": [
+                    {"role": "user", "content": f"Give me a quote about: {ex['tags']}"},
+                    {"role": "assistant", "content": f"{ex['quote']} - {ex['author']}"},
+                ]
+            }
+        ds = ds.map(format_chat, remove_columns=ds.column_names)
+        
+    # Validation
+    if "messages" not in ds.column_names:
+        raise ValueError(f"Dataset '{args.dataset}' is missing the required 'messages' column. "
+                          "Please provide a dataset formatted with the Hugging Face Chat Template "
+                          "containing a 'messages' column.")
 
-    ds = ds.map(format_chat, remove_columns=ds.column_names)
     ds = ds.train_test_split(test_size=0.2)
 
     # ── Model + Tokenizer ──────────────────────────────────────────────
