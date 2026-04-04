@@ -166,6 +166,39 @@ sudo reboot
 
 ---
 
+## Building llama.cpp Forks with ROCm (e.g. PrismML Bonsai)
+
+When building llama.cpp forks (like [PrismML's Bonsai](https://github.com/PrismML-Eng/llama.cpp)) outside the toolbox against system ROCm on Strix Halo, cmake may fail to find HIP headers and libraries:
+
+```
+fatal error: 'hip/hip_fp16.h' file not found
+ld.lld: error: unable to find library -lamdhip64
+```
+
+**Fix:** Pass explicit ROCm include and library paths to cmake:
+
+```bash
+CMAKE_PREFIX_PATH=/opt/rocm HIP_PATH=/opt/rocm cmake -B build \
+  -DGGML_HIP=ON \
+  -DAMDGPU_TARGETS=gfx1151 \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_HIP_COMPILER=/opt/rocm/llvm/bin/clang++ \
+  -DCMAKE_HIP_FLAGS="-I/opt/rocm/include" \
+  -DCMAKE_EXE_LINKER_FLAGS="-L/opt/rocm/lib" \
+  -DCMAKE_SHARED_LINKER_FLAGS="-L/opt/rocm/lib"
+
+cmake --build build -j$(nproc)
+```
+
+**Benchmark (PrismML Bonsai 8B, 1-bit, 1.15 GB):**
+
+| Metric | CPU-only | ROCm/HIP (GPU) |
+|--------|----------|-----------------|
+| Prompt | 3.3 t/s | 81.4 t/s |
+| Generation | 2.3 t/s | 76.7 t/s |
+
+---
+
 ## Performance on Strix Halo
 
 | Model | Full FT | LoRA | 8-bit + LoRA | QLoRA |
