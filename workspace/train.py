@@ -420,7 +420,7 @@ def main():
         print(f"Time:   {elapsed:.2f}s")
         print(f"Peak:   {peak:.2f} GB")
         print("-" * 50)
-        trainer.save_model()
+    trainer.save_model()
 
     full_cleanup(model, trainer)
 
